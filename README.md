@@ -1,29 +1,11 @@
 Range-Ex
 =======
-[![Build Status](https://app.travis-ci.com/nielstron/range-ex.svg?branch=master)](https://app.travis-ci.com/nielstron/range-ex)
+[![Tests & QA](https://github.com/nielstron/range-ex/actions/workflows/tests.yml/badge.svg)](https://github.com/nielstron/range-ex/actions/workflows/tests.yml)
 [![PyPI version](https://badge.fury.io/py/range-ex.svg)](https://pypi.org/project/range-ex/)
 ![PyPI - Python Version](https://img.shields.io/pypi/pyversions/range-ex.svg)
 [![PyPI - Status](https://img.shields.io/pypi/status/range-ex.svg)](https://pypi.org/project/range-ex/)
 
-This tool builds a regular expression for your numerical range.
-
-
-
-<!-- TABLE OF CONTENTS -->
-## Table of Contents
-
-* [About the Project](#about-the-project)
-  * [Coded With Language](#coded-with-language)
-* [Getting Started](#getting-started)
-  * [Prerequisites](#prerequisites)
-  * [Installation](#installation)
-* [Usage](#usage)
-* [Roadmap](#roadmap)
-* [Contributing](#contributing)
-* [License](#license)
-* [Contact](#contact)
-* [Acknowledgements](#acknowledgements)
-
+This tool builds a regular expression for a numerical range.
 
 
 ### Installation
@@ -43,19 +25,27 @@ Supports integer numbers and negative range.
 
 ```python
 from range_ex import range_regex
+
 regex1 = range_regex(5,89)
+# ([5-9]|[2-7][0-9]|1[0-9]|8[0-9])
+
 regex2 = range_regex(-65,12)
-
-regex3 = range_regex(minimum=5)
-regex4 = range_regex(maximum=89)
-```
-
-Example regex generated for 25-53
-```
-([3-4][0-9]|2[5-9]|5[0-3])
+# (-[1-9]|-[2-5][0-9]|-1[0-9]|-6[0-5]|[0-9]|1[0-2])
 ```
 
 > Note: This will still find matches in strings like `1234` or `abc25def53`, so you may want to wrap it in `^` and `$` to match the whole string or `\b...\b` to ensure word boundaries are matched.
+
+If you only pass one of the two arguments, the other will be set to `None`, which means it will not be constrained.
+In this case, the regex will match any number that is greater than or equal to the minimum or less than or equal to the maximum.
+
+```python
+regex3 = range_regex(minimum=5)
+# (([5-9])|[1-9]\\d{1}\\d*)
+
+regex4 = range_regex(maximum=89)
+# (-[1-9]\\d*|([0-9]|[2-7][0-9]|1[0-9]|8[0-9]))
+```
+
 
 ### Contributing
 
