@@ -237,10 +237,10 @@ def range_regex(minimum: Optional[int] = None, maximum: Optional[int] = None):
         return r"-?([1-9][0-9]*|0)"
     if minimum is None:
         if maximum == 0:
-            return "(-[1-9]\d*|0)"
+            return r"(-[1-9]\d*|0)"
         elif maximum > 0:
             upperbound_regex = _range_regex(0, maximum)
-            return f"(-[1-9]\d*|{upperbound_regex})"
+            return rf"(-[1-9]\d*|{upperbound_regex})"
         else:
             # choose the smallest number with the same number of digits as lowerbound,
             # and allow all negative numbers with strictly more digits
@@ -252,7 +252,7 @@ def range_regex(minimum: Optional[int] = None, maximum: Optional[int] = None):
     if maximum is None:
         if minimum < 0:
             lowerbound_regex = _range_regex(minimum, 0)
-            return f"({lowerbound_regex}|[1-9]\d*)"
+            return rf"({lowerbound_regex}|[1-9]\d*)"
         else:
             # choose the highest number with the same number of digits as upperbound,
             # and allow all numbers with strictly more digits
