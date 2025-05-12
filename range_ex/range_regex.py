@@ -202,7 +202,7 @@ def _range_regex(a, b):
                 "".join(x[:-max_num_decimal]) if "".join(x[:-max_num_decimal]) else "0?"
             )
             new_regex.append(
-                f"{start_appender_str}{non_fractional_part}\.{''.join(fractional_part)}[0-9]*"
+                rf"{start_appender_str}{non_fractional_part}\.{''.join(fractional_part)}[0-9]*"
             )
         regex = f"({'|'.join(new_regex)})"
         return regex
