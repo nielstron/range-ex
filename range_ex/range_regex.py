@@ -236,17 +236,29 @@ def range_regex(minimum: Optional[int] = None, maximum: Optional[int] = None):
     if minimum is None and maximum is None:
         return r"-?([1-9][0-9]*|0)"
     if minimum is None:
-        if maximum > 0:
+        if maximum == 0:
+            return "(-[1-9]\d*|0)"
+        elif maximum > 0:
             upperbound_regex = _range_regex(0, maximum)
             return f"(-[1-9]\d*|{upperbound_regex})"
         else:
-            # TODO  This case is not handled yet.
-            raise ValueError(f"Cannot generate regex for range (-inf, {maximum})")
+            # choose the smallest number with the same number of digits as lowerbound,
+            # and allow all negative numbers with strictly more digits
+            num_digits = len(str(maximum)) - 1
+            lower_bound = -int("".join(["9"] * num_digits))
+            range_expression = _range_regex(lower_bound, maximum)
+            # now match any number with at least one more digit
+            return rf"({range_expression}|-[1-9]\d{{{num_digits}}}\d*)"
     if maximum is None:
         if minimum < 0:
             lowerbound_regex = _range_regex(minimum, 0)
             return f"({lowerbound_regex}|[1-9]\d*)"
         else:
-            # TODO  This case is not handled yet.
-            raise ValueError(f"Cannot generate regex for range ({minimum}, inf)")
+            # choose the highest number with the same number of digits as upperbound,
+            # and allow all numbers with strictly more digits
+            num_digits = len(str(minimum))
+            upperbound = int("".join(["9"] * num_digits))
+            lowerbound_regex = _range_regex(minimum, upperbound)
+            # now match any number with at least one more digit
+            return rf"({lowerbound_regex}|[1-9]\d{{{num_digits}}}\d*)"
     return _range_regex(minimum, maximum)

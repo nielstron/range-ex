@@ -50,7 +50,7 @@ def test_numerical_range_outside(pair):
     assert re.compile(generated_regex).fullmatch(str(value_outside)) is None
 
 
-@given(st.integers(max_value=-1), st.integers())
+@given(st.integers(), st.integers())
 @settings(max_examples=10000)
 def test_range_lower_bounded(lower_bound, value):
     generated_regex = range_regex(minimum=lower_bound)
@@ -60,7 +60,7 @@ def test_range_lower_bounded(lower_bound, value):
 
 
 @given(
-    st.integers(min_value=1),
+    st.integers(),
     st.integers(),
 )
 @settings(max_examples=10000)

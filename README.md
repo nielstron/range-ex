@@ -61,6 +61,12 @@ Example regex generated for 25-53
 
 Contributions are very welcome. Please open an issue or a pull request if you have any suggestions or improvements.
 
+To test your changes, run the following command:
+
+```sh
+pytest -n 5
+```
+
 ### Acknowledgements
 
 This project is based on [regex_engine](https://github.com/raj-kiran-p/regex_engine). Feel free to check it out.
