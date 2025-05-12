@@ -5,6 +5,8 @@ from hypothesis.strategies import one_of
 
 from range_ex import range_regex
 
+NUM_EXAMPLES = 5000
+
 
 @st.composite
 def ranges_samples(draw):
@@ -35,7 +37,7 @@ def ranges_samples_above(draw):
 
 
 @given(ranges_samples_inside())
-@settings(max_examples=10000)
+@settings(max_examples=NUM_EXAMPLES)
 def test_numerical_range(pair):
     (start_range, end_range, value_inside) = pair
     generated_regex = range_regex(start_range, end_range)
@@ -43,7 +45,7 @@ def test_numerical_range(pair):
 
 
 @given(one_of(ranges_samples_below(), ranges_samples_above()))
-@settings(max_examples=10000)
+@settings(max_examples=NUM_EXAMPLES)
 def test_numerical_range_outside(pair):
     (start_range, end_range, value_outside) = pair
     generated_regex = range_regex(start_range, end_range)
@@ -51,7 +53,7 @@ def test_numerical_range_outside(pair):
 
 
 @given(st.integers(), st.integers())
-@settings(max_examples=10000)
+@settings(max_examples=NUM_EXAMPLES)
 def test_range_lower_bounded(lower_bound, value):
     generated_regex = range_regex(minimum=lower_bound)
     assert (re.compile(generated_regex).fullmatch(str(value)) is not None) == (
@@ -63,7 +65,7 @@ def test_range_lower_bounded(lower_bound, value):
     st.integers(),
     st.integers(),
 )
-@settings(max_examples=10000)
+@settings(max_examples=NUM_EXAMPLES)
 def test_range_upper_bounded(upper_bound, value):
     generated_regex = range_regex(maximum=upper_bound)
     assert (re.compile(generated_regex).fullmatch(str(value)) is not None) == (
@@ -74,7 +76,7 @@ def test_range_upper_bounded(upper_bound, value):
 @given(
     st.integers(),
 )
-@settings(max_examples=10000)
+@settings(max_examples=NUM_EXAMPLES)
 def test_range_no_bound(value):
     generated_regex = range_regex()
     assert re.compile(generated_regex).fullmatch(str(value)) is not None

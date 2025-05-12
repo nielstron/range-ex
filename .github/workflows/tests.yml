@@ -36,7 +36,7 @@ jobs:
     - name: Run tests
       run: |
         pip3 install coveralls
-        coverage run -m pytest tests
+        coverage run -m pytest tests -n 5
 
     - name: Upload coverage data to coveralls.io
       run: coveralls
