@@ -1,6 +1,7 @@
 Range-Ex
 =======
 [![Tests & QA](https://github.com/nielstron/range-ex/actions/workflows/tests.yml/badge.svg)](https://github.com/nielstron/range-ex/actions/workflows/tests.yml)
+[![Coverage Status](https://coveralls.io/repos/github/nielstron/range-ex/badge.svg?branch=master)](https://coveralls.io/github/nielstron/range-ex?branch=master)
 [![PyPI version](https://badge.fury.io/py/range-ex.svg)](https://pypi.org/project/range-ex/)
 ![PyPI - Python Version](https://img.shields.io/pypi/pyversions/range-ex.svg)
 [![PyPI - Status](https://img.shields.io/pypi/status/range-ex.svg)](https://pypi.org/project/range-ex/)
