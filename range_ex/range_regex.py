@@ -229,23 +229,23 @@ def range_regex(minimum: Optional[int] = None, maximum: Optional[int] = None):
 
     Supports only integer numbers.
 
-    If you omit minimum, the regex will match all numbers smaller than maximum.
-    If you omit maximum, the regex will match all numbers larger than minimum.
+    If you omit minimum, the regex will match all numbers smaller than maximum (maximum must be > 0).
+    If you omit maximum, the regex will match all numbers larger than minimum (minimum must be < 0).
     If you omit both, all numbers will be matched.
     """
     if minimum is None and maximum is None:
-        return r"-?([1-9][0-9]+|0)"
+        return r"-?([1-9][0-9]*|0)"
     if minimum is None:
         if maximum > 0:
             upperbound_regex = _range_regex(0, maximum)
-            return f"(-[1-9]\d+|{upperbound_regex})"
+            return f"(-[1-9]\d*|{upperbound_regex})"
         else:
             # TODO  This case is not handled yet.
             raise ValueError(f"Cannot generate regex for range (-inf, {maximum})")
     if maximum is None:
         if minimum < 0:
             lowerbound_regex = _range_regex(minimum, 0)
-            return f"({lowerbound_regex}|[1-9]\d+)"
+            return f"({lowerbound_regex}|[1-9]\d*)"
         else:
             # TODO  This case is not handled yet.
             raise ValueError(f"Cannot generate regex for range ({minimum}, inf)")

@@ -1,2 +1,2 @@
 __version__ = "1.1.0"
-from .regex_generator import range_regex as range_regex
+from .range_regex import range_regex as range_regex

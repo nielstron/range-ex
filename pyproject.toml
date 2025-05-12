@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "range_ex"
+version = "0.0.1"
+authors = [
+    { name = "Niels Mündler", email = "n.muendler@posteo.de" },
+    { name = "Raj Kiran P", email = "rajkiranjp@gmail.com" }
+]
+description = "Generate regex for numerical ranges"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent"
+]
+
+[project.urls]
+Homepage = "https://github.com/nielstron/range_ex"
+Repository = "https://github.com/nielstron/range_ex"
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "hypothesis"
+]

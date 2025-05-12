@@ -1,6 +1,6 @@
 import re
 
-from hypothesis import given, strategies as st
+from hypothesis import given, strategies as st, settings
 from hypothesis.strategies import one_of
 
 from range_ex import range_regex
@@ -23,18 +23,19 @@ def ranges_samples_inside(draw):
 @st.composite
 def ranges_samples_below(draw):
     lower_bound, upper_bound = draw(ranges_samples())
-    outside = draw(st.integers(min_value=lower_bound - 1))
+    outside = draw(st.integers(max_value=lower_bound - 1))
     return (lower_bound, upper_bound, outside)
 
 
 @st.composite
 def ranges_samples_above(draw):
     lower_bound, upper_bound = draw(ranges_samples())
-    outside = draw(st.integers(max_value=upper_bound + 1))
+    outside = draw(st.integers(min_value=upper_bound + 1))
     return (lower_bound, upper_bound, outside)
 
 
 @given(ranges_samples_inside())
+@settings(max_examples=10000)
 def test_numerical_range(pair):
     (start_range, end_range, value_inside) = pair
     generated_regex = range_regex(start_range, end_range)
@@ -42,6 +43,7 @@ def test_numerical_range(pair):
 
 
 @given(one_of(ranges_samples_below(), ranges_samples_above()))
+@settings(max_examples=10000)
 def test_numerical_range_outside(pair):
     (start_range, end_range, value_outside) = pair
     generated_regex = range_regex(start_range, end_range)
@@ -49,12 +51,11 @@ def test_numerical_range_outside(pair):
 
 
 @given(st.integers(max_value=-1), st.integers())
+@settings(max_examples=10000)
 def test_range_lower_bounded(lower_bound, value):
     generated_regex = range_regex(minimum=lower_bound)
-    assert (
-        re.compile(generated_regex).fullmatch(str(value))
-        is not None
-        == (value >= lower_bound)
+    assert (re.compile(generated_regex).fullmatch(str(value)) is not None) == (
+        value >= lower_bound
     )
 
 
@@ -62,10 +63,18 @@ def test_range_lower_bounded(lower_bound, value):
     st.integers(min_value=1),
     st.integers(),
 )
+@settings(max_examples=10000)
 def test_range_upper_bounded(upper_bound, value):
     generated_regex = range_regex(maximum=upper_bound)
-    assert (
-        re.compile(generated_regex).fullmatch(str(value))
-        is not None
-        == (value <= upper_bound)
+    assert (re.compile(generated_regex).fullmatch(str(value)) is not None) == (
+        value <= upper_bound
     )
+
+
+@given(
+    st.integers(),
+)
+@settings(max_examples=10000)
+def test_range_no_bound(value):
+    generated_regex = range_regex()
+    assert re.compile(generated_regex).fullmatch(str(value)) is not None
