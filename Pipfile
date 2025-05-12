@@ -10,6 +10,7 @@ twine = "*"
 bumpversion = "*"
 mkdocs = "*"
 pytest = "*"
+hypothesis = "*"
 
 [packages]
 

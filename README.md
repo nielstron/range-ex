@@ -36,20 +36,18 @@ pip install range-ex
 <!-- USAGE EXAMPLES -->
 ## Usage
 
-If given numbers are integers you get a regex that will only match with integer and if floating-point numbers are given it only match with floating-point number.
+Pass a minimum and maximum value to the `range_regex` function to generate a regex that matches numbers in that range. The range is inclusive, meaning both the minimum and maximum values are included in the regex.
 
-Supports integer and floating-point numbers and negative range.
 
-You can use `geq_regex` and `leq_regex` to generate regex for greater than or equal to and less than or equal to respectively (i.e., ranges without an upper or lower bound).
+Supports integer numbers and negative range.
 
 ```python
-from range_ex import range_regex, geq_regex, leq_regex
+from range_ex import range_regex
 regex1 = range_regex(5,89)
-regex2 = range_regex(81.78,250.23)
-regex3 = range_regex(-65,12)
+regex2 = range_regex(-65,12)
 
-regex4 = geq_regex(5)
-regex5 = leq_regex(89)
+regex3 = range_regex(minimum=5)
+regex4 = range_regex(maximum=89)
 ```
 
 Example regex generated for 25-53
@@ -57,8 +55,7 @@ Example regex generated for 25-53
 ([3-4][0-9]|2[5-9]|5[0-3])
 ```
 
-
-The regex might not be optimal but it will surely serve the purpose.
+> Note: This will still find matches in strings like `1234` or `abc25def53`, so you may want to wrap it in `^` and `$` to match the whole string or `\b...\b` to ensure word boundaries are matched.
 
 ### Contributing
 

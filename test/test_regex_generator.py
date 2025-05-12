@@ -1,22 +1,71 @@
-import pytest
+import re
+
+from hypothesis import given, strategies as st
+from hypothesis.strategies import one_of
+
 from range_ex import range_regex
 
 
-@pytest.mark.parametrize(
-    "start_range, end_range, expected_regex",
-    [
-        (25, 53, "([3-4][0-9]|2[5-9]|5[0-3])"),
-        (-14, 18, "(-[1-9]|-1[0-4]|[0-9]|1[0-8])"),
-        (
-            5.98,
-            21.2,
-            "([6-8]\\.[0-9][0-9]?[0-9]*|5\\.9[8-9]?[0-9]*|9\\.[0-8][0-9]?[0-9]*|9\\.9[0-9]?[0-9]*|1[1-9]\\.[0-9][0-9]?[0-9]*|10\\.[1-9][0-9]?[0-9]*|10\\.0[0-9]?[0-9]*|2[0-0]\\.[0-9][0-9]?[0-9]*|21\\.[0-1][0-9]?[0-9]*|21\\.2[0-0]?[0-9]*)",
-        ),
-    ],
-)
-def test_numerical_range(start_range, end_range, expected_regex):
+@st.composite
+def ranges_samples(draw):
+    lower_bound = draw(st.integers())
+    upper_bound = draw(st.integers(min_value=lower_bound))
+    return (lower_bound, upper_bound)
+
+
+@st.composite
+def ranges_samples_inside(draw):
+    lower_bound, upper_bound = draw(ranges_samples())
+    inside = draw(st.integers(min_value=lower_bound, max_value=upper_bound))
+    return (lower_bound, upper_bound, inside)
+
+
+@st.composite
+def ranges_samples_below(draw):
+    lower_bound, upper_bound = draw(ranges_samples())
+    outside = draw(st.integers(min_value=lower_bound - 1))
+    return (lower_bound, upper_bound, outside)
+
+
+@st.composite
+def ranges_samples_above(draw):
+    lower_bound, upper_bound = draw(ranges_samples())
+    outside = draw(st.integers(max_value=upper_bound + 1))
+    return (lower_bound, upper_bound, outside)
+
+
+@given(ranges_samples_inside())
+def test_numerical_range(pair):
+    (start_range, end_range, value_inside) = pair
     generated_regex = range_regex(start_range, end_range)
-    assert generated_regex == expected_regex
+    assert re.compile(generated_regex).fullmatch(str(value_inside)) is not None
 
 
-# pipenv run python -m pytest test/test_regex_generator.py -v --maxfail=1
+@given(one_of(ranges_samples_below(), ranges_samples_above()))
+def test_numerical_range_outside(pair):
+    (start_range, end_range, value_outside) = pair
+    generated_regex = range_regex(start_range, end_range)
+    assert re.compile(generated_regex).fullmatch(str(value_outside)) is None
+
+
+@given(st.integers(max_value=-1), st.integers())
+def test_range_lower_bounded(lower_bound, value):
+    generated_regex = range_regex(minimum=lower_bound)
+    assert (
+        re.compile(generated_regex).fullmatch(str(value))
+        is not None
+        == (value >= lower_bound)
+    )
+
+
+@given(
+    st.integers(min_value=1),
+    st.integers(),
+)
+def test_range_upper_bounded(upper_bound, value):
+    generated_regex = range_regex(maximum=upper_bound)
+    assert (
+        re.compile(generated_regex).fullmatch(str(value))
+        is not None
+        == (value <= upper_bound)
+    )

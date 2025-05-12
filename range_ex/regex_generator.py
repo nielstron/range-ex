@@ -1,4 +1,5 @@
 import re
+from typing import Optional
 
 
 def __compute_numerical_range(str_a, str_b, any_digit="[0-9]", start_appender_str=""):
@@ -98,7 +99,7 @@ def __range_splitter(a, b):
     """
     ranges = []
     # Entire range negative
-    if b <= 0:  # a <= 0 implicit
+    if b < 0:  # a <= 0 implicit
         sign = "-"
         a, b = abs(a), abs(b)
         a, b = (a, b) if a < b else (b, a)
@@ -132,7 +133,7 @@ def __range_splitter(a, b):
     return ranges
 
 
-def range_regex(a, b):
+def _range_regex(a, b):
     """
     Generate regex for matching a number between a range.
     The regex might not be optimal but it serves the purpose.
@@ -141,6 +142,8 @@ def range_regex(a, b):
     ie, If you pass two floating number the regex can only match floating number,
     else if you pass two integer number you can only mtach integer number.
     """
+    if a == 0 and b == 0:
+        return "-?0"
     # Handling floating point numbers
     if (isinstance(a, (float)) and isinstance(b, (float, int))) or (
         isinstance(a, (float, int)) and isinstance(b, (float))
@@ -214,7 +217,36 @@ def range_regex(a, b):
     # Neither integer nor float
     else:
         raise (
-            Exception(
+            ValueError(
                 f"Unsupported data types for {a}:{type(a)} or {b}:{type(a)}, Only supported float/int"
             )
         )
+
+
+def range_regex(minimum: Optional[int] = None, maximum: Optional[int] = None):
+    """
+    Generate regex for matching a number between a range, inclusive on both ends.
+
+    Supports only integer numbers.
+
+    If you omit minimum, the regex will match all numbers smaller than maximum.
+    If you omit maximum, the regex will match all numbers larger than minimum.
+    If you omit both, all numbers will be matched.
+    """
+    if minimum is None and maximum is None:
+        return r"-?([1-9][0-9]+|0)"
+    if minimum is None:
+        if maximum > 0:
+            upperbound_regex = _range_regex(0, maximum)
+            return f"(-[1-9]\d+|{upperbound_regex})"
+        else:
+            # TODO  This case is not handled yet.
+            raise ValueError(f"Cannot generate regex for range (-inf, {maximum})")
+    if maximum is None:
+        if minimum < 0:
+            lowerbound_regex = _range_regex(minimum, 0)
+            return f"({lowerbound_regex}|[1-9]\d+)"
+        else:
+            # TODO  This case is not handled yet.
+            raise ValueError(f"Cannot generate regex for range ({minimum}, inf)")
+    return _range_regex(minimum, maximum)
