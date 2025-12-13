@@ -1,5 +1,9 @@
 import re
-from typing import Optional
+from typing import Final, Optional
+
+# Compile regexes once:
+BAD_RANGE_RE: Final = re.compile(r"\[(\d)-\1]")
+COUNT_RE: Final = re.compile(r"\\d{(\d+)}\\d\*")
 
 
 def __compute_numerical_range(str_a, str_b, any_digit="[0-9]", start_appender_str=""):
@@ -223,7 +227,79 @@ def _range_regex(a, b):
         )
 
 
-def range_regex(minimum: Optional[int] = None, maximum: Optional[int] = None):
+def clean_regex(regex: str) -> str:
+    r"""
+    Iterate over the regex to clean it up. Contributed by Aaron D. Marasco.
+
+    Examples:
+    5 to inf
+    (([5-9])|[1-9]\d{1}\d*)
+    ->
+    (?:(?:[5-9])|[1-9]\d+)
+
+    189075 to inf
+    (([2-8][0-9][0-9][0-9][0-9][0-9]|1[9-9][0-9][0-9][0-9][0-9]|189[1-9][0-9][0-9]|1890[8-9][0-9]|18907[5-9]|9[0-8][0-9][0-9][0-9][0-9]|99[0-8][0-9][0-9][0-9]|999[0-8][0-9][0-9]|9999[0-8][0-9]|99999[0-9])|[1-9]\d{6}\d*)
+    ->
+    (?:(?:[2-8]\d{5}|19\d{4}|189[1-9]\d{2}|1890[8-9]\d|18907[5-9]|9[0-8]\d{4}|99[0-8]\d{3}|999[0-8]\d{2}|9999[0-8]\d|99999\d)|[1-9]\d{6,})
+
+    1_000_000 to inf
+    (([2-8][0-9][0-9][0-9][0-9][0-9][0-9]|1[1-9][0-9][0-9][0-9][0-9][0-9]|10[1-9][0-9][0-9][0-9][0-9]|100[1-9][0-9][0-9][0-9]|1000[1-9][0-9][0-9]|10000[1-9][0-9]|100000[0-9]|9[0-8][0-9][0-9][0-9][0-9][0-9]|99[0-8][0-9][0-9][0-9][0-9]|999[0-8][0-9][0-9][0-9]|9999[0-8][0-9][0-9]|99999[0-8][0-9]|999999[0-9])|[1-9]\d{7}\d*)
+    ->
+    (?:(?:[2-8]\d{6}|1[1-9]\d{5}|10[1-9]\d{4}|100[1-9]\d{3}|1000[1-9]\d{2}|10000[1-9]\d|100000\d|9[0-8]\d{5}|99[0-8]\d{4}|999[0-8]\d{3}|9999[0-8]\d{2}|99999[0-8]\d|999999\d)|[1-9]\d{7,})
+
+    1_000_000 to 1_424_424
+    (1[1-3][0-9][0-9][0-9][0-9][0-9]|10[1-9][0-9][0-9][0-9][0-9]|100[1-9][0-9][0-9][0-9]|1000[1-9][0-9][0-9]|10000[1-9][0-9]|100000[0-9]|14[0-1][0-9][0-9][0-9][0-9]|142[0-3][0-9][0-9][0-9]|1424[0-3][0-9][0-9]|14244[0-1][0-9]|142442[0-4])
+    ->
+    (?:1[1-3]\d{5}|10[1-9]\d{4}|100[1-9]\d{3}|1000[1-9]\d{2}|10000[1-9]\d|100000\d|14[0-1]\d{4}|142[0-3]\d{3}|1424[0-3]\d{2}|14244[0-1]\d|142442[0-4])
+    """
+    # Pass one: [N-N] => N
+    regex = BAD_RANGE_RE.sub(r"\1", regex)
+
+    # Pass two: [0-9] => \d
+    regex = regex.replace("[0-9]", r"\d")
+
+    # Pass three: remove useless {1}
+    regex = regex.replace("{1}", r"")
+
+    # Pass four: \d\d* => \d+ and \d?\d* => \d* and \d*\d* => \d*
+    last_len = -1
+    while len(regex) != last_len:
+        last_len = len(regex)
+        regex = regex.replace(r"\d\d*", r"\d+")
+        regex = regex.replace(r"\d?\d*", r"\d*")
+        regex = regex.replace(r"\d*\d*", r"\d*")
+
+    # Pass five: Runs of \d => \d{N}
+    rsplit: list[str] = []
+    # We use str.split, e.g.
+    # >>> str.split('(\\d1[1-3]\\d\\d\\d\\d\\dABC\\d\\d', r'\d')
+    # ['(', '1[1-3]', '', '', '', '', 'ABC', '', '']
+    # Now we want to replace runs of empty strings with {N}
+    runlen = 0
+    for chunk in regex.split(r"\d"):
+        if chunk == "":
+            runlen += 1
+        else:
+            if runlen:
+                rsplit.append(f"{{{runlen+1}}}{chunk}")
+                runlen = 0
+            else:
+                rsplit.append(chunk)
+    # Coming out, did we have some trailing?
+    if runlen:
+        rsplit.append(f"{{{runlen}}}" if runlen > 1 else "")
+    regex = r"\d".join(rsplit)
+
+    # Pass six: \d{N}\d* => \d{N,}
+    regex = COUNT_RE.sub(r"\\d{\1,}", regex)
+
+    # Pass seven: Don't needlessly capture
+    regex = regex.replace("(", "(?:")
+
+    return regex
+
+
+def range_regex(minimum: Optional[int] = None, maximum: Optional[int] = None) -> str:
     """
     Generate regex for matching a number between a range, inclusive on both ends.
 
@@ -233,6 +309,10 @@ def range_regex(minimum: Optional[int] = None, maximum: Optional[int] = None):
     If you omit maximum, the regex will match all numbers larger than minimum (minimum must be < 0).
     If you omit both, all numbers will be matched.
     """
+    return clean_regex(range_regex_core(minimum, maximum))
+
+
+def range_regex_core(minimum: Optional[int] = None, maximum: Optional[int] = None):
     if minimum is None and maximum is None:
         return r"-?([1-9][0-9]*|0)"
     if minimum is None:
