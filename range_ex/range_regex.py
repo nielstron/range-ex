@@ -193,10 +193,14 @@ class Either(Node):
     def normalize(self) -> Node:
         # Normalize options first so each branch is internally simplified.
         normalized_options = [option.normalize() for option in self.options]
+        seen = set()
         flattened_options: list[Node] = []
         for option in normalized_options:
-            # Flatten nested alternations: (a|(b|c)) -> (a|b|c).
-            flattened_options.extend(option.as_options())
+            opts = option.as_options()
+            for opt in opts:
+                if opt not in seen:
+                    seen.add(opt)
+                    flattened_options.append(opt)
         return Either(tuple(flattened_options))
 
     def as_options(self):
@@ -384,18 +388,20 @@ def _float_range_ast_within_one(a: Decimal, b: Decimal) -> Node:
         if b != ceil(a):
             # after decimals, match the range from equalized width strings + optional trailing digits
             str_b_orig = str(b - pre_decs)[2:]  # skip "0."
-            str_b = str(int(str_b_orig) - 1)
+            str_b = str_b_orig
             # equalize widths by padding with zeros, then compute the range AST for the fractional part
-            str_a = str_a.lstrip("0") or "0"
-            str_b = str_b.lstrip("0") or "0"
+            str_a = str_a.rstrip("0") or "0"
+            str_b = str_b.rstrip("0") or "0"
             max_decimals = max(len(str_a), len(str_b))
             str_a = str_a.ljust(max_decimals, "0")
             str_b = str_b.ljust(max_decimals, "0")
-            decimal_ast = __compute_numerical_range_ast(str_a, str_b)
-            decimal_ast = _one_of(_seq(decimal_ast, _any_digits(None)), Literal(str_b_orig))
+            str_b = str(int(str_b) - 1)
         else:
-            # if b is exactly ceil(a), we match a to infinity
-            decimal_ast = _range_from_bounds_ast(int(str_a), None)
+            # if b is exactly ceil(a), we match a to infinity, so the decimal part can be any number with the same precision as a
+            str_b_orig = "9" * _fractional_precision(a)
+            str_b = str_b_orig
+        decimal_ast = __compute_numerical_range_ast(str_a, str_b)
+        decimal_ast = _one_of(_seq(decimal_ast, _any_digits(None)), Literal(str_b_orig))
     else:
         str_b = str(abs(b - pre_decs))[2:]  # skip "0."
         if floor(b) != a:
@@ -403,15 +409,15 @@ def _float_range_ast_within_one(a: Decimal, b: Decimal) -> Node:
             str_a_orig = str(abs(a - pre_decs))[2:]  # skip "0."
             str_a = str(int(str_a_orig) - 1)
             # equalize widths by padding with zeros, then compute the range AST for the fractional part
-            str_a = str_a.lstrip("0") or "0"
-            str_b = str_b.lstrip("0") or "0"
+            str_a = str_a.rstrip("0") or "0"
+            str_b = str_b.rstrip("0") or "0"
             max_decimals = max(len(str_a), len(str_b))
             str_a = str_a.ljust(max_decimals, "0")
             str_b = str_b.ljust(max_decimals, "0")
             decimal_ast = __compute_numerical_range_ast(str_b, str_a)
             decimal_ast = _one_of(_seq(decimal_ast, _any_digits(None)), Literal(str_a_orig))
         else:
-            decimal_ast = _range_from_bounds_ast(int(str_b), None)
+            decimal_ast = _range_from_bounds_ast(int(str_b or "0"), None)
     if a - pre_decs == 0 and pre_decs == 0:
         # handle the special case that just "." is not allowed
         return _one_of(
@@ -446,7 +452,7 @@ def _float_range_ast(a: DecimalLike, b: DecimalLike, strict=False) -> Node:
     second_pattern = _seq(_range_from_bounds_ast(ceil(a_decimal)+(1 if a_decimal < 0 else 0), floor(b_decimal)-(1 if b_decimal > 0 else 0)), decimals)
     # we therefore need to explicitly add a and b in non-strict mode since it may not covered by the above pattern
     if not strict:
-        second_pattern = _one_of(second_pattern, Literal(floor(b_decimal)), Literal(ceil(a_decimal)))
+        second_pattern = _one_of(second_pattern, Literal(str(floor(b_decimal))), Literal(str(ceil(a_decimal))))
     third_pattern = _float_range_ast_within_one(floor(b_decimal), b_decimal)
     return _one_of(first_pattern, second_pattern, third_pattern)
 
