@@ -33,3 +33,6 @@ dev = [
     "pytest-xdist",
     "hypothesis",
 ]
+
+[tool.setuptools.package-data]
+range_ex = ["py.typed"]
