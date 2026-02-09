@@ -93,12 +93,18 @@ def test_range_no_bound(value):
 
 
 def test_single_digit_class_uses_shorthand():
-    assert range_regex(0, 9) == r"(?:\d)"
+    assert range_regex(0, 9) == r"\d"
 
 
 def test_redundant_single_value_ranges_are_collapsed():
     generated_regex = range_regex(169, 543)
     assert re.search(r"\[([0-9])-\1\]", generated_regex) is None
+
+
+def test_range_regex_capturing_rendering_toggle():
+    assert "(?:" in range_regex(-65, 12, capturing=False)
+    assert "(?:" not in range_regex(-65, 12, capturing=True)
+    assert "(" in range_regex(-65, 12, capturing=True)
 
 
 @given(float_ranges_and_values())
@@ -134,6 +140,12 @@ def test_float_range_non_strict_matches_int_and_decimal():
     compiled = re.compile(generated_regex)
     assert compiled.fullmatch("1") is not None
     assert compiled.fullmatch("1.5") is not None
+
+
+def test_float_range_capturing_rendering_toggle():
+    assert "(?:" in float_range_regex(0.5, 1.5, strict=True, capturing=False)
+    assert "(?:" not in float_range_regex(0.5, 1.5, strict=True, capturing=True)
+    assert "(" in float_range_regex(0.5, 1.5, strict=True, capturing=True)
 
 
 def test_float_range_supports_decimal_bounds_strict():
