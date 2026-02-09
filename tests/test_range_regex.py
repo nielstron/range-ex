@@ -54,6 +54,17 @@ def optional_float_bounds_and_integer(draw):
     return minimum_tenths, maximum_tenths, integer_value
 
 
+@st.composite
+def optional_float_bounds_and_dot_leading_fraction(draw):
+    minimum_tenths = draw(st.one_of(st.none(), st.integers(min_value=-1000, max_value=1000)))
+    maximum_tenths = draw(st.one_of(st.none(), st.integers(min_value=-1000, max_value=1000)))
+    digit = draw(st.integers(min_value=1, max_value=9))
+    negative = draw(st.booleans())
+    text = f"-.{digit}" if negative else f".{digit}"
+    value = Decimal(f"-0.{digit}" if negative else f"0.{digit}")
+    return minimum_tenths, maximum_tenths, text, value
+
+
 @given(ranges_samples_inside())
 @settings(max_examples=NUM_EXAMPLES, deadline=None)
 def test_numerical_range(pair):
@@ -150,6 +161,25 @@ def test_float_range_dot_integer_forms_follow_numeric_bounds(data, strict):
     assert matched == (lower_ok and upper_ok)
 
 
+@given(optional_float_bounds_and_dot_leading_fraction(), st.booleans())
+@settings(max_examples=NUM_EXAMPLES, deadline=None)
+def test_float_range_dot_leading_forms_follow_numeric_bounds(data, strict):
+    minimum_tenths, maximum_tenths, text, value = data
+    minimum = None if minimum_tenths is None else minimum_tenths / 10
+    maximum = None if maximum_tenths is None else maximum_tenths / 10
+
+    generated_regex = float_range_regex(minimum=minimum, maximum=maximum, strict=strict)
+    matched = re.compile(generated_regex).fullmatch(text) is not None
+
+    if minimum is not None and maximum is not None and minimum > maximum:
+        assert matched is False
+        return
+
+    lower_ok = minimum is None or value >= Decimal(str(minimum))
+    upper_ok = maximum is None or value <= Decimal(str(maximum))
+    assert matched == (lower_ok and upper_ok)
+
+
 def test_range_regex_does_not_match_decimal_strings():
     assert re.compile(range_regex()).fullmatch("0.0") is None
     assert re.compile(range_regex(-10, 10)).fullmatch("0.0") is None
@@ -197,6 +227,12 @@ def test_float_range_maximum_only_strict_accepts_trailing_dot_integers():
     assert compiled.fullmatch("-2.") is not None
     assert compiled.fullmatch("-3.") is not None
     assert compiled.fullmatch("-1.") is None
+
+
+def test_float_range_maximum_negative_fraction_includes_minus_nine_point_x():
+    compiled = re.compile(float_range_regex(maximum=-0.1, strict=True))
+    assert compiled.fullmatch("-9.1") is not None
+    assert compiled.fullmatch("-9.9") is not None
 
 
 def test_float_range_non_strict_matches_int_and_decimal():

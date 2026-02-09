@@ -494,6 +494,8 @@ def _integer_unbounded_ast() -> Node:
     return _alt(_negative_unbounded_ast(), _positive_unbounded_ast(), _zero())
 
 def _positive_with_min_digits_ast(extra_digits: int) -> Node:
+    if extra_digits < 0:
+        raise ValueError("extra_digits must be >= 0")
     return _seq(
         DigitRange(1, 9),
         *tuple(DigitRange(0, 9) for _ in range(extra_digits)),
@@ -536,12 +538,30 @@ def _strict_decimal_unbounded_ast() -> Node:
         ),
     )
 
-
 def _negative_strict_decimal_with_min_int_digits_ast(extra_digits: int) -> Node:
     return _seq(Literal("-"), _positive_strict_decimal_with_min_int_digits_ast(extra_digits))
 
 
 def _positive_strict_decimal_with_min_int_digits_ast(extra_digits: int) -> Node:
+    if extra_digits < 0:
+        raise ValueError("extra_digits must be >= 0")
+    if extra_digits == 0:
+        integer_part = _alt(Literal("0"), _positive_unbounded_ast())
+        return _alt(
+            _seq(
+                integer_part,
+                Literal("."),
+                DigitRange(0, 9),
+                FixedRepetition(DigitRange(0, 9), 0, None),
+            ),
+            _seq(integer_part, Literal(".")),
+            _seq(
+                Literal("."),
+                DigitRange(0, 9),
+                FixedRepetition(DigitRange(0, 9), 0, None),
+            ),
+        )
+
     integer_part = _seq(
         DigitRange(1, 9),
         *tuple(DigitRange(0, 9) for _ in range(extra_digits)),
@@ -613,8 +633,10 @@ def _float_range_from_bounds_ast(
             bounded = _float_range_ast(Decimal("0.0"), maximum_decimal)
             decimal_ast = _alt(_negative_strict_decimal_with_min_int_digits_ast(0), bounded)
         else:
-            int_digits = len(str(int(abs(maximum_decimal).to_integral_value(rounding=ROUND_FLOOR))))
-            lower = -(Decimal(10) ** int_digits) + Decimal("1")
+            int_digits = len(
+                str(int(abs(maximum_decimal).to_integral_value(rounding=ROUND_FLOOR)))
+            )
+            lower = -(Decimal(10) ** int_digits)
             bounded = _float_range_ast(lower, maximum_decimal)
             decimal_ast = _alt(bounded, _negative_strict_decimal_with_min_int_digits_ast(int_digits))
 
