@@ -1,3 +1,4 @@
+from decimal import Decimal
 import re
 
 from hypothesis import given, strategies as st, settings
@@ -43,10 +44,6 @@ def float_ranges_and_values(draw):
     upper_bound = draw(st.integers(min_value=lower_bound, max_value=10000))
     value = draw(st.integers(min_value=-10000, max_value=10000))
     return (lower_bound / 10, upper_bound / 10, value / 10)
-
-
-def _one_decimal_str(value: float) -> str:
-    return "0.0" if value == 0 else f"{value:.1f}"
 
 
 @given(ranges_samples_inside())
@@ -108,19 +105,52 @@ def test_redundant_single_value_ranges_are_collapsed():
 @settings(max_examples=NUM_EXAMPLES)
 def test_float_range(pair):
     (start_range, end_range, value) = pair
-    generated_regex = float_range_regex(start_range, end_range)
-    matched = re.compile(generated_regex).fullmatch(_one_decimal_str(value)) is not None
+    generated_regex = float_range_regex(start_range, end_range, strict=True)
+    matched = re.compile(generated_regex).fullmatch(f"{value:.1f}") is not None
     assert matched == (start_range <= value <= end_range)
-
-
-def test_range_regex_rejects_float_bounds():
-    with pytest.raises(TypeError):
-        range_regex(0.0, 10)
-    with pytest.raises(TypeError):
-        range_regex(0, 10.0)
 
 
 def test_range_regex_does_not_match_decimal_strings():
     assert re.compile(range_regex()).fullmatch("0.0") is None
     assert re.compile(range_regex(-10, 10)).fullmatch("0.0") is None
     assert re.compile(range_regex(0, 0)).fullmatch("0.0") is None
+
+
+def test_float_range_strict_requires_decimal_point():
+    generated_regex = float_range_regex(0, 2, strict=True)
+    compiled = re.compile(generated_regex)
+    assert compiled.fullmatch("1") is None
+    assert compiled.fullmatch("1.0") is not None
+
+
+def test_float_range_non_strict_matches_int_and_decimal():
+    generated_regex = float_range_regex(0, 2, strict=False)
+    compiled = re.compile(generated_regex)
+    assert compiled.fullmatch("1") is not None
+    assert compiled.fullmatch("1.5") is not None
+
+
+def test_float_range_supports_decimal_bounds_strict():
+    generated_regex = float_range_regex(Decimal("0.5"), Decimal("1.5"), strict=True)
+    compiled = re.compile(generated_regex)
+    assert compiled.fullmatch("1.0") is not None
+    assert compiled.fullmatch("1") is None
+
+
+def test_float_range_supports_decimal_bounds_non_strict():
+    generated_regex = float_range_regex(Decimal("0.5"), Decimal("1.5"), strict=False)
+    compiled = re.compile(generated_regex)
+    assert compiled.fullmatch("1") is not None
+    assert compiled.fullmatch("1.25") is not None
+
+
+def test_float_range_supports_parseable_string_bounds():
+    generated_regex = float_range_regex("0.5", "1.5", strict=False)
+    compiled = re.compile(generated_regex)
+    assert compiled.fullmatch("1") is not None
+    assert compiled.fullmatch("1.25") is not None
+
+
+def test_float_range_rejects_non_parseable_string_bounds():
+    with pytest.raises(TypeError):
+        float_range_regex("foo", "1.5")

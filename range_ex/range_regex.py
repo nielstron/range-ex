@@ -1,4 +1,7 @@
-from typing import Optional
+from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_FLOOR
+from typing import Optional, Union
+
+DecimalLike = Union[int, float, Decimal, str]
 
 ANY_DIGIT = r"\d"
 
@@ -32,8 +35,11 @@ def __tokenize_numeric_pattern(pattern: str) -> list[str]:
 
 def __compute_numerical_range(str_a, str_b, start_appender_str=""):
     """
-    Helps generating regex for numerical range.
-    Assumptions are int(str_a) <= int(str_b) and should have equal number of digits.
+    Build a regex fragment for an inclusive integer range with equal-width endpoints.
+
+    Assumes:
+    - int(str_a) <= int(str_b)
+    - len(str_a) == len(str_b)
     """
     str_len = len(str_a)
     if len(str_a) != len(str_b):
@@ -107,22 +113,19 @@ def __compute_numerical_range(str_a, str_b, start_appender_str=""):
 
 def __range_splitter(a, b):
     """
-    Given two numbers, split them into multiple range.
-    Such that each range has equal number of digits.
+    Split an inclusive integer range into sub-ranges with equal digit width.
 
     Example:
-        range : -15 and 256
-        output : [(1, 9, '-'),
-                  (10, 15, '-'),
-                  (0, 9, ''),
-                  (10, 99, ''),
-                  (100, 256, '')]
+        input: -15 and 256
+        output: [(1, 9, '-'),
+                 (10, 15, '-'),
+                 (0, 9, ''),
+                 (10, 99, ''),
+                 (100, 256, '')]
 
-        The third element denotes the sign.
-        ie, Positive('') or Negative('-').
-
-    Output Type : List
-    Assumption : a <= b.
+    The third element is the sign prefix:
+    - '' for positive values
+    - '-' for negative values
     """
     ranges = []
     # Entire range negative
@@ -160,24 +163,34 @@ def __range_splitter(a, b):
     return ranges
 
 
-def _float_range_regex(a, b):
+def _float_range_regex(a: DecimalLike, b: DecimalLike) -> str:
     """
-    Generate regex for matching a number between a range.
-    The regex might not be optimal but it serves the purpose.
+    Generate a regex that matches decimal numbers in the inclusive range [a, b].
 
-    You get what you give.
-    ie, If you pass two floating number the regex can only match floating number,
-    else if you pass two integer number you can only mtach integer number.
+    This function is used by ``float_range_regex`` and always emits a decimal
+    pattern (for example, values like ``0.0`` or ``1.25``).
     """
-    a, b = (a, b) if a < b else (b, a)
-    num_of_decimal_in_a = len(str(float(a))) - (str(float(a)).find(".") + 1)
-    num_of_decimal_in_b = len(str(float(b))) - (str(float(b)).find(".") + 1)
+    a_decimal = Decimal(str(a))
+    b_decimal = Decimal(str(b))
+    a_decimal, b_decimal = (
+        (a_decimal, b_decimal) if a_decimal < b_decimal else (b_decimal, a_decimal)
+    )
+
+    a_string = format(a_decimal, "f")
+    b_string = format(b_decimal, "f")
+    if "." not in a_string:
+        a_string = f"{a_string}.0"
+    if "." not in b_string:
+        b_string = f"{b_string}.0"
+
+    num_of_decimal_in_a = len(a_string) - (a_string.find(".") + 1)
+    num_of_decimal_in_b = len(b_string) - (b_string.find(".") + 1)
     max_num_decimal = max(num_of_decimal_in_a, num_of_decimal_in_b)
 
     # Properly removing floating point and converting to integer
     a, b = (
-        "".join([c for c in str(float(a)) if c != "."]),
-        "".join([c for c in str(float(b)) if c != "."]),
+        "".join([c for c in a_string if c != "."]),
+        "".join([c for c in b_string if c != "."]),
     )
     if len(str(a)) < len(str(b)):
         a = a + f"{'0'*(max_num_decimal-num_of_decimal_in_a)}"
@@ -222,7 +235,17 @@ def _float_range_regex(a, b):
     return regex
 
 
+def _to_decimal(value: DecimalLike, name: str) -> Decimal:
+    try:
+        return Decimal(str(value))
+    except InvalidOperation as exc:
+        raise TypeError(
+            f"{name} must be int, float, Decimal, or parseable string, got {value!r}"
+        ) from exc
+
+
 def _range_regex(a: int, b: int):
+    """Generate a regex that matches integers in the inclusive range [a, b]."""
     a, b = (a, b) if a < b else (b, a)
     ranges = __range_splitter(a, b)
     regex = f"(?:{'|'.join([__compute_numerical_range(str(r[0]),str(r[1]),start_appender_str=r[2]) for r in ranges])})"
@@ -231,18 +254,16 @@ def _range_regex(a: int, b: int):
 
 def range_regex(minimum: Optional[int] = None, maximum: Optional[int] = None):
     """
-    Generate regex for matching a number between a range, inclusive on both ends.
+    Generate a regex for matching integers in an inclusive range.
 
-    Supports only integer numbers.
+    Supports integers only.
 
-    If you omit minimum, the regex will match all numbers smaller than maximum (maximum must be > 0).
-    If you omit maximum, the regex will match all numbers larger than minimum (minimum must be < 0).
-    If you omit both, all numbers will be matched.
+    - If both bounds are omitted, all integers are matched.
+    - If ``minimum`` is omitted, values less than or equal to ``maximum`` are matched.
+    - If ``maximum`` is omitted, values greater than or equal to ``minimum`` are matched.
+
+    For floating-point ranges, use ``float_range_regex``.
     """
-    if minimum is not None and not isinstance(minimum, int):
-        raise TypeError(f"minimum must be int or None, got {type(minimum).__name__}")
-    if maximum is not None and not isinstance(maximum, int):
-        raise TypeError(f"maximum must be int or None, got {type(maximum).__name__}")
 
     if minimum is None and maximum is None:
         return r"-?(?:[1-9]\d*|0)"
@@ -275,12 +296,37 @@ def range_regex(minimum: Optional[int] = None, maximum: Optional[int] = None):
     return _range_regex(minimum, maximum)
 
 
-def float_range_regex(minimum: float, maximum: float):
+def float_range_regex(
+    minimum: DecimalLike, maximum: DecimalLike, strict: bool = True
+) -> str:
     """
-    Generate regex for matching a floating-point number between a range, inclusive on both ends.
+    Generate a regex for matching decimal numbers in an inclusive range.
+
+    ``minimum`` and ``maximum`` can be ``int``, ``float``, ``Decimal``, or a
+    string that can be parsed by ``Decimal``.
+
+    - If ``strict`` is ``True`` (default), matches require a decimal point.
+    - If ``strict`` is ``False``, both integer and decimal representations are
+      matched, as long as their numeric value is in range.
     """
-    if not isinstance(minimum, (int, float)):
-        raise TypeError(f"minimum must be int or float, got {type(minimum).__name__}")
-    if not isinstance(maximum, (int, float)):
-        raise TypeError(f"maximum must be int or float, got {type(maximum).__name__}")
-    return _float_range_regex(minimum, maximum)
+    minimum_decimal = _to_decimal(minimum, "minimum")
+    maximum_decimal = _to_decimal(maximum, "maximum")
+
+    decimal_regex = _float_range_regex(minimum_decimal, maximum_decimal)
+    if strict:
+        return decimal_regex
+
+    lower_decimal = minimum_decimal
+    upper_decimal = maximum_decimal
+    lower_decimal, upper_decimal = (
+        (lower_decimal, upper_decimal)
+        if lower_decimal < upper_decimal
+        else (upper_decimal, lower_decimal)
+    )
+    int_lower = int(lower_decimal.to_integral_value(rounding=ROUND_CEILING))
+    int_upper = int(upper_decimal.to_integral_value(rounding=ROUND_FLOOR))
+    if int_lower > int_upper:
+        return decimal_regex
+
+    integer_regex = _range_regex(int_lower, int_upper)
+    return f"(?:{integer_regex}|{decimal_regex})"
