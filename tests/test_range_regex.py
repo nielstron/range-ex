@@ -135,6 +135,22 @@ def test_float_range_unbounded_strict_accepts_dot_edge_forms():
     assert compiled.fullmatch(".1") is not None
 
 
+def test_float_range_bounded_strict_accepts_trailing_dot_for_integers_in_range():
+    compiled = re.compile(float_range_regex(-2, 2, strict=True))
+    assert compiled.fullmatch("-2.") is not None
+    assert compiled.fullmatch("-1.") is not None
+    assert compiled.fullmatch("0.") is not None
+    assert compiled.fullmatch("1.") is not None
+    assert compiled.fullmatch("2.") is not None
+    assert compiled.fullmatch("-3.") is None
+    assert compiled.fullmatch("3.") is None
+
+
+def test_float_range_bounded_strict_accepts_trailing_dot_for_inner_integer():
+    compiled = re.compile(float_range_regex(0.5, 1.5, strict=True))
+    assert compiled.fullmatch("1.") is not None
+
+
 def test_float_range_non_strict_matches_int_and_decimal():
     generated_regex = float_range_regex(0, 2, strict=False)
     compiled = re.compile(generated_regex)

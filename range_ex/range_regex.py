@@ -660,11 +660,15 @@ def _float_range_from_bounds_ast(
         decimal_ast = _alt(*parts)
     else:
         decimal_ast = _float_range_ast(lower_decimal, upper_decimal, trailing_any=True)
-    if strict:
-        return decimal_ast
-
     int_lower = int(lower_decimal.to_integral_value(rounding=ROUND_CEILING))
     int_upper = int(upper_decimal.to_integral_value(rounding=ROUND_FLOOR))
+
+    if strict:
+        if int_lower > int_upper:
+            return decimal_ast
+        integer_dot_ast = _seq(_range_ast(int_lower, int_upper), Literal("."))
+        return _alt(decimal_ast, integer_dot_ast)
+
     if int_lower > int_upper:
         return decimal_ast
 
