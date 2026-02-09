@@ -355,6 +355,8 @@ def _integer_unbounded_ast() -> Alternation:
     return Alternation(
         (
             _negative_unbounded_ast(),
+            _positive_unbounded_ast(),
+            Sequence((Literal("0"),)),
         )
     )
 
@@ -375,9 +377,7 @@ def _negative_with_min_digits_ast(extra_digits: int) -> Sequence:
     return Sequence(
         (
             Literal("-"),
-            DigitRange(1, 9),
-            *tuple(DigitRange(0, 9) for _ in range(extra_digits)),
-            ZeroOrMore(DigitRange(0, 9)),
+            _positive_with_min_digits_ast(extra_digits),
         )
     )
 
@@ -387,14 +387,27 @@ def _negative_unbounded_ast() -> Sequence:
 
 
 def _strict_decimal_unbounded_ast() -> Alternation:
-    # -?(?:0|[1-9]\d*)\.\d\d*
-    integer_part = _positive_unbounded_ast()
+    # Accept these strict decimal forms:
+    # -?I.F+  (e.g. 1.2)
+    # -?I.    (e.g. 1.)
+    # -?.F+   (e.g. .2)
+    # with I in {0, [1-9]\d*}
+    integer_part = Alternation((Sequence((Literal("0"),)), _positive_unbounded_ast()))
     return Alternation(
         (
             Sequence(
                 (
                     OptionalNode(Literal("-")),
                     integer_part,
+                    Literal("."),
+                    DigitRange(0, 9),
+                    ZeroOrMore(DigitRange(0, 9)),
+                )
+            ),
+            Sequence((OptionalNode(Literal("-")), integer_part, Literal("."))),
+            Sequence(
+                (
+                    OptionalNode(Literal("-")),
                     Literal("."),
                     DigitRange(0, 9),
                     ZeroOrMore(DigitRange(0, 9)),

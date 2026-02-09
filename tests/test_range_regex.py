@@ -123,6 +123,12 @@ def test_float_range_strict_requires_decimal_point():
     assert compiled.fullmatch("1.0") is not None
 
 
+def test_float_range_unbounded_strict_accepts_dot_edge_forms():
+    compiled = re.compile(float_range_regex(strict=True))
+    assert compiled.fullmatch("1.") is not None
+    assert compiled.fullmatch(".1") is not None
+
+
 def test_float_range_non_strict_matches_int_and_decimal():
     generated_regex = float_range_regex(0, 2, strict=False)
     compiled = re.compile(generated_regex)
