@@ -204,14 +204,14 @@ def _range_regex(a, b):
             new_regex.append(
                 rf"{start_appender_str}{non_fractional_part}\.{''.join(fractional_part)}[0-9]*"
             )
-        regex = f"({'|'.join(new_regex)})"
+        regex = f"(?:{'|'.join(new_regex)})"
         return regex
 
     # Handling integer numbers
     elif isinstance(a, (int)) and isinstance(b, (int)):
         a, b = (a, b) if a < b else (b, a)
         ranges = __range_splitter(a, b)
-        regex = f"({'|'.join([__compute_numerical_range(str(r[0]),str(r[1]),any_digit='[0-9]',start_appender_str=r[2]) for r in ranges])})"
+        regex = f"(?:{'|'.join([__compute_numerical_range(str(r[0]),str(r[1]),any_digit='[0-9]',start_appender_str=r[2]) for r in ranges])})"
         return regex
 
     # Neither integer nor float
@@ -234,13 +234,13 @@ def range_regex(minimum: Optional[int] = None, maximum: Optional[int] = None):
     If you omit both, all numbers will be matched.
     """
     if minimum is None and maximum is None:
-        return r"-?([1-9][0-9]*|0)"
+        return r"-?(?:[1-9][0-9]*|0)"
     if minimum is None:
         if maximum == 0:
-            return r"(-[1-9]\d*|0)"
+            return r"(?:-[1-9]\d*|0)"
         elif maximum > 0:
             upperbound_regex = _range_regex(0, maximum)
-            return rf"(-[1-9]\d*|{upperbound_regex})"
+            return rf"(?:-[1-9]\d*|{upperbound_regex})"
         else:
             # choose the smallest number with the same number of digits as lowerbound,
             # and allow all negative numbers with strictly more digits
@@ -248,11 +248,11 @@ def range_regex(minimum: Optional[int] = None, maximum: Optional[int] = None):
             lower_bound = -int("".join(["9"] * num_digits))
             range_expression = _range_regex(lower_bound, maximum)
             # now match any number with at least one more digit
-            return rf"({range_expression}|-[1-9]\d{{{num_digits}}}\d*)"
+            return rf"(?:{range_expression}|-[1-9]\d{{{num_digits}}}\d*)"
     if maximum is None:
         if minimum < 0:
             lowerbound_regex = _range_regex(minimum, 0)
-            return rf"({lowerbound_regex}|[1-9]\d*)"
+            return rf"(?:{lowerbound_regex}|[1-9]\d*)"
         else:
             # choose the highest number with the same number of digits as upperbound,
             # and allow all numbers with strictly more digits
@@ -260,5 +260,5 @@ def range_regex(minimum: Optional[int] = None, maximum: Optional[int] = None):
             upperbound = int("".join(["9"] * num_digits))
             lowerbound_regex = _range_regex(minimum, upperbound)
             # now match any number with at least one more digit
-            return rf"({lowerbound_regex}|[1-9]\d{{{num_digits}}}\d*)"
+            return rf"(?:{lowerbound_regex}|[1-9]\d{{{num_digits}}}\d*)"
     return _range_regex(minimum, maximum)
