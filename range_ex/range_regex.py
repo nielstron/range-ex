@@ -449,13 +449,8 @@ def float_range_regex(
     if strict:
         return decimal_ast.normalize().render()
 
-    lower_decimal, upper_decimal = (
-        (minimum_decimal, maximum_decimal)
-        if minimum_decimal < maximum_decimal
-        else (maximum_decimal, minimum_decimal)
-    )
-    int_lower = int(lower_decimal.to_integral_value(rounding=ROUND_CEILING))
-    int_upper = int(upper_decimal.to_integral_value(rounding=ROUND_FLOOR))
+    int_lower = int(minimum_decimal.to_integral_value(rounding=ROUND_CEILING))
+    int_upper = int(maximum_decimal.to_integral_value(rounding=ROUND_FLOOR))
     if int_lower > int_upper:
         return decimal_ast.normalize().render()
 
