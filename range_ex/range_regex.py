@@ -5,6 +5,7 @@ import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
+from math import floor, ceil
 from typing import Optional, Union
 
 DecimalLike = Union[int, float, Decimal, str]
@@ -85,12 +86,12 @@ class FixedRepetition(Node):
 
     @property
     def max_repeats(self) -> Optional[None]:
-        return self.max_repeats
+        return self._max_repeats
 
     def __post_init__(self) -> None:
-        if self.min_repeats < 0:
+        if self._min_repeats < 0:
             raise ValueError("min_repeats must be >= 0")
-        if self.max_repeats is not None and self.max_repeats < self.min_repeats:
+        if self._max_repeats is not None and self._max_repeats < self._min_repeats:
             raise ValueError("max_repeats must be >= min_repeats")
 
     def render(self, capturing: bool = False) -> str:
@@ -163,13 +164,14 @@ class Sequence(Node):
             if (
                 (prev.node if isinstance(prev, FixedRepetition) else prev) == (part.node if isinstance(part, FixedRepetition) else part)
             ):
+                node = (prev.node if isinstance(prev, FixedRepetition) else prev)
                 max_repeats = (
                     None
                     if prev.max_repeats is None or part.max_repeats is None
                     else prev.max_repeats + part.max_repeats
                 )
                 merged_parts[-1] = FixedRepetition(
-                    prev.node, prev.min_repeats + part.min_repeats, max_repeats
+                    node, prev.min_repeats + part.min_repeats, max_repeats
                 )
                 continue
             merged_parts.append(part)
@@ -205,8 +207,11 @@ def _literal_parts(text: str) -> list[Node]:
     return [Literal(c) for c in text]
 
 
-def _any_digits(count: int) -> Node:
-    return FixedRepetition(DigitRange(0, 9), count, count)
+def _any_digits(count: Optional[int]) -> Node:
+    """
+    If count is not None, match exactly count digits. Otherwise, match any number of digits.
+    """
+    return FixedRepetition(DigitRange(0, 9), count or 0, count)
 
 
 def _one_of(*nodes: Node) -> Node:
@@ -221,10 +226,12 @@ def _seq(*nodes: Node) -> Node:
         flat.extend(node.as_parts())
     return Sequence(tuple(flat))
 
+def optional(node: Node) -> Node:
+    return FixedRepetition(node, 0, 1)
 
 def __compute_numerical_range_ast(
     str_a: str, str_b: str, start_parts: Optional[list[Node]] = None
-) -> list[Node]:
+) -> Node:
     """
     Build regex AST sequences for an inclusive integer range with equal-width endpoints.
 
@@ -241,9 +248,9 @@ def __compute_numerical_range_ast(
     str_len = len(str_a)
 
     if str_a == str_b:
-        return [_seq(*parts, *_literal_parts(str_a))]
+        return _seq(*parts, *_literal_parts(str_a))
     if str_len == 1:
-        return [_seq(*parts, DigitRange(int(str_a), int(str_b)))]
+        return _seq(*parts, DigitRange(int(str_a), int(str_b)))
 
     check_equal = -1
     for i in range(str_len):
@@ -295,7 +302,7 @@ def __compute_numerical_range_ast(
                 )
             )
 
-    return patterns
+    return _seq(*patterns)
 
 
 def __range_splitter(a, b):
@@ -353,7 +360,7 @@ def _range_ast(a: int, b: int) -> Node:
     patterns: list[Node] = []
     for start, end, sign in ranges:
         prefix = [Literal("-")] if sign else []
-        patterns.extend(
+        patterns.append(
             __compute_numerical_range_ast(str(start), str(end), start_parts=prefix)
         )
     return _one_of(*patterns)
@@ -365,95 +372,83 @@ def _fractional_precision(value: Decimal) -> int:
         return 0
     return len(text) - (text.find(".") + 1)
 
+def _float_range_ast_within_one(a: Decimal, b: Decimal) -> Node:
+    """
+    Generate a regex AST that matches any number [a, b], where floor(a) <= a < b <= ceil(a)
+    """
+    # everything before decimals is fixed
+    pre_decs = floor(a) if a > 0 else ceil(a)
+    pre_decs_node = Literal(str(pre_decs))
+    if a >= 0:
+        str_a = str(a - pre_decs)[2:]  # skip "0."
+        if b != ceil(a):
+            # after decimals, match the range from equalized width strings + optional trailing digits
+            str_b_orig = str(b - pre_decs)[2:]  # skip "0."
+            str_b = str(int(str_b_orig) - 1)
+            # equalize widths by padding with zeros, then compute the range AST for the fractional part
+            str_a = str_a.lstrip("0") or "0"
+            str_b = str_b.lstrip("0") or "0"
+            max_decimals = max(len(str_a), len(str_b))
+            str_a = str_a.ljust(max_decimals, "0")
+            str_b = str_b.ljust(max_decimals, "0")
+            decimal_ast = __compute_numerical_range_ast(str_a, str_b)
+            decimal_ast = _one_of(_seq(decimal_ast, _any_digits(None)), Literal(str_b_orig))
+        else:
+            # if b is exactly ceil(a), we match a to infinity
+            decimal_ast = _range_from_bounds_ast(int(str_a), None)
+    else:
+        str_b = str(abs(b - pre_decs))[2:]  # skip "0."
+        if floor(b) != a:
+            # after decimals, match the range from equalized width strings + optional trailing digits
+            str_a_orig = str(abs(a - pre_decs))[2:]  # skip "0."
+            str_a = str(int(str_a_orig) - 1)
+            # equalize widths by padding with zeros, then compute the range AST for the fractional part
+            str_a = str_a.lstrip("0") or "0"
+            str_b = str_b.lstrip("0") or "0"
+            max_decimals = max(len(str_a), len(str_b))
+            str_a = str_a.ljust(max_decimals, "0")
+            str_b = str_b.ljust(max_decimals, "0")
+            decimal_ast = __compute_numerical_range_ast(str_b, str_a)
+            decimal_ast = _one_of(_seq(decimal_ast, _any_digits(None)), Literal(str_a_orig))
+        else:
+            decimal_ast = _range_from_bounds_ast(int(str_b), None)
+    if a - pre_decs == 0 and pre_decs == 0:
+        # handle the special case that just "." is not allowed
+        return _one_of(
+            _seq(optional(pre_decs_node), Literal("."), decimal_ast),
+            _seq(pre_decs_node, Literal("."), optional(decimal_ast)),
+        )
+    # in the other cases we can optionally allow the missing part (e.g. ".2" can be written as "0.2", and "1." can be written as "1")
+    elif pre_decs == 0:
+        pre_decs_node = optional(pre_decs_node)
+    elif (a - pre_decs == 0 and a >= 0) or (b - pre_decs == 0 and a < 0):
+        decimal_ast = optional(decimal_ast)
+    sign = [Literal("-")] if pre_decs < 0 else []
+    return _seq(*sign, pre_decs_node, Literal("."), decimal_ast)
 
-def _float_range_ast(a: DecimalLike, b: DecimalLike, trailing_any: bool = True) -> Node:
+def _float_range_ast(a: DecimalLike, b: DecimalLike, strict=False) -> Node:
     """
     Generate a regex AST that matches decimal numbers in the inclusive range [a, b].
     """
-    a_decimal = Decimal(str(a))
-    b_decimal = Decimal(str(b))
+    a_decimal = Decimal(a)
+    b_decimal = Decimal(b)
     if b_decimal < a_decimal:
         return Empty()
 
-    a_string = format(a_decimal, "f")
-    b_string = format(b_decimal, "f")
-    if "." not in a_string:
-        a_string = f"{a_string}.0"
-    if "." not in b_string:
-        b_string = f"{b_string}.0"
-
-    num_of_decimal_in_a = len(a_string) - (a_string.find(".") + 1)
-    num_of_decimal_in_b = len(b_string) - (b_string.find(".") + 1)
-    max_num_decimal = max(num_of_decimal_in_a, num_of_decimal_in_b)
-
-    a_digits, b_digits = (
-        "".join(c for c in a_string if c != "."),
-        "".join(c for c in b_string if c != "."),
-    )
-    if len(a_digits) < len(b_digits):
-        a_digits = a_digits + ("0" * (max_num_decimal - num_of_decimal_in_a))
-    else:
-        b_digits = b_digits + ("0" * (max_num_decimal - num_of_decimal_in_b))
-
-    a_int, b_int = int(a_digits), int(b_digits)
-
-    scaled_int_ast = _range_ast(a_int, b_int)
-    new_patterns: list[Node] = []
-    for pattern_node in scaled_int_ast.as_options():
-        parts = pattern_node.as_parts()
-        expanded_parts: list[Node] = []
-        for part in parts:
-            if isinstance(part, FixedRepetition):
-                if part.max_repeats is not None and part.min_repeats == part.max_repeats:
-                    expanded_parts.extend(part.node for _ in range(part.min_repeats))
-                else:
-                    expanded_parts.append(part)
-            else:
-                expanded_parts.append(part)
-        parts = expanded_parts
-        sign_parts: list[Node] = []
-        if parts and isinstance(parts[0], Literal) and parts[0].text.startswith("-"):
-            sign_parts = [Literal("-")]
-            leading_rest = parts[0].text[1:]
-            parts = _literal_parts(leading_rest) + parts[1:]
-
-        if len(parts) < max_num_decimal:
-            parts = [Literal("0")] * (max_num_decimal - len(parts)) + parts
-
-        split_index = len(parts) - max_num_decimal
-        non_fractional = parts[:split_index]
-        fractional = parts[split_index:]
-
-        required_fractional: list[Node] = [fractional[0]]
-        required_fractional.extend(FixedRepetition(token, 0, 1) for token in fractional[1:])
-
-        if non_fractional:
-            non_fractional_parts = non_fractional
-        else:
-            non_fractional_parts = [FixedRepetition(Literal("0"), 0, 1)]
-
-        trailing_node: Node
-        if trailing_any:
-            trailing_node = FixedRepetition(DigitRange(0, 9), 0, None)
-        else:
-            trailing_node = FixedRepetition(Literal("0"), 0, None)
-
-        new_patterns.append(
-            _seq(
-                *sign_parts,
-                *non_fractional_parts,
-                Literal("."),
-                *required_fractional,
-                trailing_node,
-            )
-        )
-
-    return _one_of(*new_patterns)
-
-
-def _to_decimal(value: DecimalLike, name: str) -> Decimal:
-    _ = name
-    return Decimal(str(value))
+    # there are three ranges here:
+    # [a, ceil(a)], [ceil(a), floor(b)], [floor(b), b]
+    first_pattern = _float_range_ast_within_one(a_decimal, ceil(a_decimal))
+    decimals = _seq(Literal("."), _any_digits(None))
+    if not strict:
+        decimals = optional(decimals)
+    # through appending decimals, in the positive, this matches a - (b-1).9999...
+    # in the negative likewise, it matches (a+1).0000... - b
+    second_pattern = _seq(_range_from_bounds_ast(ceil(a_decimal)+(1 if a_decimal < 0 else 0), floor(b_decimal)-(1 if b_decimal > 0 else 0)), decimals)
+    # we therefore need to explicitly add a and b in non-strict mode since it may not covered by the above pattern
+    if not strict:
+        second_pattern = _one_of(second_pattern, Literal(floor(b_decimal)), Literal(ceil(a_decimal)))
+    third_pattern = _float_range_ast_within_one(floor(b_decimal), b_decimal)
+    return _one_of(first_pattern, second_pattern, third_pattern)
 
 
 def _zero() -> Literal:
@@ -598,30 +593,27 @@ def _float_range_from_bounds_ast(
 
     if minimum is None:
         assert maximum is not None
-        maximum_decimal = _to_decimal(maximum, "maximum")
+        maximum_decimal = Decimal(maximum)
         if maximum_decimal >= 0:
-            bounded = _float_range_ast(Decimal("0.0"), maximum_decimal)
+            bounded = _float_range_ast(Decimal("0.0"), maximum_decimal, strict=strict)
             decimal_ast = _one_of(_negative_strict_decimal_with_min_int_digits_ast(0), bounded)
         else:
             int_digits = len(
-                str(int(abs(maximum_decimal).to_integral_value(rounding=ROUND_FLOOR)))
+                str(int(floor(abs(maximum_decimal))))
             )
             lower = -(Decimal(10) ** int_digits)
-            bounded = _float_range_ast(lower, maximum_decimal)
+            bounded = _float_range_ast(lower, maximum_decimal, strict)
             decimal_ast = _one_of(bounded, _negative_strict_decimal_with_min_int_digits_ast(int_digits))
 
-        if strict:
-            integer_upper = int(maximum_decimal.to_integral_value(rounding=ROUND_FLOOR))
-            integer_dot_ast = _seq(_range_from_bounds_ast(None, integer_upper), Literal("."))
-            return _one_of(decimal_ast, integer_dot_ast)
-
-        integer_upper = int(maximum_decimal.to_integral_value(rounding=ROUND_FLOOR))
+        integer_upper = int(floor(maximum_decimal))
         integer_ast = _range_from_bounds_ast(None, integer_upper)
         integer_dot_ast = _seq(integer_ast, Literal("."))
+        if strict:
+            return _one_of(decimal_ast, integer_dot_ast)
         return _one_of(integer_ast, integer_dot_ast, decimal_ast)
 
     if maximum is None:
-        minimum_decimal = _to_decimal(minimum, "minimum")
+        minimum_decimal = Decimal(minimum)
         if minimum_decimal <= 0:
             bounded = _float_range_ast(minimum_decimal, Decimal("0.0"))
             decimal_ast = _one_of(bounded, _positive_strict_decimal_with_min_int_digits_ast(0))
@@ -631,56 +623,18 @@ def _float_range_from_bounds_ast(
             bounded = _float_range_ast(minimum_decimal, upper)
             decimal_ast = _one_of(bounded, _positive_strict_decimal_with_min_int_digits_ast(int_digits))
 
-        if strict:
-            integer_lower = int(minimum_decimal.to_integral_value(rounding=ROUND_CEILING))
-            integer_dot_ast = _seq(_range_from_bounds_ast(integer_lower, None), Literal("."))
-            return _one_of(decimal_ast, integer_dot_ast)
-
         integer_lower = int(minimum_decimal.to_integral_value(rounding=ROUND_CEILING))
         integer_ast = _range_from_bounds_ast(integer_lower, None)
         integer_dot_ast = _seq(integer_ast, Literal("."))
+        if strict:
+            return _one_of(decimal_ast, integer_dot_ast)
         return _one_of(integer_ast, integer_dot_ast, decimal_ast)
 
-    minimum_decimal = _to_decimal(minimum, "minimum")
-    maximum_decimal = _to_decimal(maximum, "maximum")
-    if minimum_decimal > maximum_decimal:
-        return Empty()
-    lower_decimal, upper_decimal = (
-        (minimum_decimal, maximum_decimal)
-        if minimum_decimal < maximum_decimal
-        else (maximum_decimal, minimum_decimal)
-    )
-
-    decimal_ast: Node
-    if upper_decimal > 0:
-        precision = max(
-            1,
-            _fractional_precision(lower_decimal),
-            _fractional_precision(upper_decimal),
-        )
-        step = Decimal(1).scaleb(-precision)
-        interior_upper = upper_decimal - step
-        parts: list[Node] = []
-        if lower_decimal <= interior_upper:
-            parts.append(_float_range_ast(lower_decimal, interior_upper, trailing_any=True))
-        parts.append(_float_range_ast(upper_decimal, upper_decimal, trailing_any=False))
-        decimal_ast = _one_of(*parts)
-    else:
-        decimal_ast = _float_range_ast(lower_decimal, upper_decimal, trailing_any=True)
-    int_lower = int(lower_decimal.to_integral_value(rounding=ROUND_CEILING))
-    int_upper = int(upper_decimal.to_integral_value(rounding=ROUND_FLOOR))
-
-    if strict:
-        if int_lower > int_upper:
-            return decimal_ast
-        integer_dot_ast = _seq(_range_ast(int_lower, int_upper), Literal("."))
-        return _one_of(decimal_ast, integer_dot_ast)
-
-    if int_lower > int_upper:
-        return decimal_ast
-
-    integer_ast = _range_ast(int_lower, int_upper)
+    decimal_ast = _float_range_ast(minimum, maximum)
+    integer_ast = _range_ast(ceil(minimum), floor(maximum))
     integer_dot_ast = _seq(integer_ast, Literal("."))
+    if strict:
+        return _one_of(decimal_ast, integer_dot_ast)
     return _one_of(integer_ast, integer_dot_ast, decimal_ast)
 
 
