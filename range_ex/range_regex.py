@@ -1,60 +1,147 @@
+from __future__ import annotations
+
+import re
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_FLOOR
 from typing import Optional, Union
 
 DecimalLike = Union[int, float, Decimal, str]
 
-ANY_DIGIT = r"\d"
+
+class Node(ABC):
+    @abstractmethod
+    def render(self) -> str:
+        raise NotImplementedError
+
+    def normalize(self) -> "NodeType":
+        return self
 
 
-def __digit_range(start: int, end: int) -> str:
-    if start == end:
-        return str(start)
-    if start == 0 and end == 9:
-        return ANY_DIGIT
-    return f"[{start}-{end}]"
+@dataclass(frozen=True)
+class Literal(Node):
+    text: str
+
+    def render(self) -> str:
+        return re.escape(self.text)
 
 
-def __tokenize_numeric_pattern(pattern: str) -> list[str]:
-    tokens = []
-    i = 0
-    while i < len(pattern):
-        if pattern[i] == "[":
-            end = pattern.find("]", i)
-            if end == -1:
-                raise ValueError(f"Malformed range expression: {pattern}")
-            tokens.append(pattern[i : end + 1])
-            i = end + 1
-        elif i + 1 < len(pattern) and pattern[i] == "\\" and pattern[i + 1] == "d":
-            tokens.append(r"\d")
-            i += 2
-        else:
-            tokens.append(pattern[i])
-            i += 1
-    return tokens
+@dataclass(frozen=True)
+class DigitRange(Node):
+    start: int
+    end: int
+
+    def render(self) -> str:
+        if self.start == self.end:
+            return str(self.start)
+        if self.start == 0 and self.end == 9:
+            return r"\d"
+        return f"[{self.start}-{self.end}]"
+
+    def normalize(self) -> "NodeType":
+        if self.start == self.end:
+            return Literal(str(self.start))
+        return self
 
 
-def __compute_numerical_range(str_a, str_b, start_appender_str=""):
+@dataclass(frozen=True)
+class OptionalNode(Node):
+    node: "NodeType"
+
+    def render(self) -> str:
+        return f"(?:{self.node.render()})?"
+
+    def normalize(self) -> "NodeType":
+        return OptionalNode(self.node.normalize())
+
+
+@dataclass(frozen=True)
+class ZeroOrMore(Node):
+    node: "NodeType"
+
+    def render(self) -> str:
+        return f"(?:{self.node.render()})*"
+
+    def normalize(self) -> "NodeType":
+        return ZeroOrMore(self.node.normalize())
+
+
+@dataclass(frozen=True)
+class Sequence(Node):
+    parts: tuple["NodeType", ...]
+
+    def render(self) -> str:
+        return "".join(part.render() for part in self.parts)
+
+    def normalize(self) -> "NodeType":
+        normalized_parts = [part.normalize() for part in self.parts]
+        merged_parts: list[NodeType] = []
+        for part in normalized_parts:
+            if (
+                merged_parts
+                and isinstance(merged_parts[-1], Literal)
+                and isinstance(part, Literal)
+            ):
+                merged_parts[-1] = Literal(merged_parts[-1].text + part.text)
+            else:
+                merged_parts.append(part)
+        return Sequence(tuple(merged_parts))
+
+
+@dataclass(frozen=True)
+class Alternation(Node):
+    options: tuple[Sequence, ...]
+
+    def render(self) -> str:
+        return f"(?:{'|'.join(option.render() for option in self.options)})"
+
+    def normalize(self) -> "NodeType":
+        normalized_options = [option.normalize() for option in self.options]
+        seen: set[str] = set()
+        unique_options: list[Sequence] = []
+        for option in normalized_options:
+            assert isinstance(option, Sequence)
+            key = option.render()
+            if key not in seen:
+                seen.add(key)
+                unique_options.append(option)
+        return Alternation(tuple(unique_options))
+
+
+NodeType = Union[Literal, DigitRange, OptionalNode, ZeroOrMore, Sequence, Alternation]
+
+
+def _literal_parts(text: str) -> list[NodeType]:
+    return [Literal(c) for c in text]
+
+
+def _any_digits(count: int) -> list[NodeType]:
+    return [DigitRange(0, 9) for _ in range(count)]
+
+
+def __compute_numerical_range_ast(
+    str_a: str, str_b: str, start_parts: Optional[list[NodeType]] = None
+) -> list[Sequence]:
     """
-    Build a regex fragment for an inclusive integer range with equal-width endpoints.
+    Build regex AST sequences for an inclusive integer range with equal-width endpoints.
 
     Assumes:
     - int(str_a) <= int(str_b)
     - len(str_a) == len(str_b)
     """
-    str_len = len(str_a)
     if len(str_a) != len(str_b):
-        raise (
-            Exception(
-                f"The input numbers ({str_a}, {str_b}) should have equal number of digits"
-            )
+        raise Exception(
+            f"The input numbers ({str_a}, {str_b}) should have equal number of digits"
         )
 
-    # Three edge cases
+    parts = list(start_parts or [])
+    str_len = len(str_a)
+
     if str_a == str_b:
-        return start_appender_str + str_a
+        return [Sequence(tuple(parts + _literal_parts(str_a)))]
     if str_len == 1:
-        return f"{start_appender_str}{__digit_range(int(str_a), int(str_b))}"
-    # Counting index position till the characteres are equal
+        return [Sequence(tuple(parts + [DigitRange(int(str_a), int(str_b))]))]
+
     check_equal = -1
     for i in range(str_len):
         if str_a[i] == str_b[i]:
@@ -62,53 +149,60 @@ def __compute_numerical_range(str_a, str_b, start_appender_str=""):
         else:
             break
     if check_equal != -1:
-        return __compute_numerical_range(
+        return __compute_numerical_range_ast(
             str_a[check_equal + 1 :],
             str_b[check_equal + 1 :],
-            start_appender_str=start_appender_str + str_a[: check_equal + 1],
+            start_parts=parts + _literal_parts(str_a[: check_equal + 1]),
         )
 
-    # Example 1: 169 - 543
-    # Intermediate range
+    patterns: list[Sequence] = []
     intermediate_range = list(range(int(str_a[0]) + 1, int(str_b[0])))
-    patterns = []
     if intermediate_range:
         patterns.append(
-            f"{start_appender_str}{__digit_range(intermediate_range[0], intermediate_range[-1])}{ANY_DIGIT * (str_len-1)}"
+            Sequence(
+                tuple(
+                    parts
+                    + [DigitRange(intermediate_range[0], intermediate_range[-1])]
+                    + _any_digits(str_len - 1)
+                )
+            )
         )
-    # patterns for the above part ['[2-4][0-9][0-9]']
 
-    # Case for str_a
-    for loop_counter in range(str_len - 1):  # no_of_digits-1 units
-        if loop_counter == str_len - 2:  # Find the last loop
+    for loop_counter in range(str_len - 1):
+        prefix = parts + _literal_parts(str_a[: loop_counter + 1])
+        if loop_counter == str_len - 2:
             patterns.append(
-                f"{start_appender_str}{str_a[:loop_counter+1]}{__digit_range(int(str_a[-1]), 9)}"
+                Sequence(tuple(prefix + [DigitRange(int(str_a[-1]), 9)]))
             )
-        else:
-            if (
-                str_a[loop_counter + 1] != "9"
-            ):  # if 599 then avoid 10 in '[6-8]...|5[10-9]..|59[9-9].|598[9-9]'
-                patterns.append(
-                    f"{start_appender_str}{str_a[:loop_counter+1]}{__digit_range(int(str_a[loop_counter+1]) + 1, 9)}{ANY_DIGIT * (str_len-2-loop_counter)}"
-                )
-    # patterns for the above part ['1[7-9][0-9]','16[9-9]']
-
-    # Case for str_b
-    for loop_counter in range(str_len - 1):  # no_of_digits-1 units
-        if loop_counter == str_len - 2:  # Find the last loop
+        elif str_a[loop_counter + 1] != "9":
             patterns.append(
-                f"{start_appender_str}{str_b[:loop_counter+1]}{__digit_range(0, int(str_b[-1]))}"
-            )
-        else:
-            if (
-                str_b[loop_counter + 1] != "0"
-            ):  # if 1102 then avoid -1 in '11[0--1].|110[0-2]'
-                patterns.append(
-                    f"{start_appender_str}{str_b[:loop_counter+1]}{__digit_range(0, int(str_b[loop_counter+1]) - 1)}{ANY_DIGIT * (str_len-2-loop_counter)}"
+                Sequence(
+                    tuple(
+                        prefix
+                        + [DigitRange(int(str_a[loop_counter + 1]) + 1, 9)]
+                        + _any_digits(str_len - 2 - loop_counter)
+                    )
                 )
-    # patterns for the above part ['5[0-3][0-9]','54[0-3]']
+            )
 
-    return "|".join(patterns)
+    for loop_counter in range(str_len - 1):
+        prefix = parts + _literal_parts(str_b[: loop_counter + 1])
+        if loop_counter == str_len - 2:
+            patterns.append(
+                Sequence(tuple(prefix + [DigitRange(0, int(str_b[-1]))]))
+            )
+        elif str_b[loop_counter + 1] != "0":
+            patterns.append(
+                Sequence(
+                    tuple(
+                        prefix
+                        + [DigitRange(0, int(str_b[loop_counter + 1]) - 1)]
+                        + _any_digits(str_len - 2 - loop_counter)
+                    )
+                )
+            )
+
+    return patterns
 
 
 def __range_splitter(a, b):
@@ -128,15 +222,12 @@ def __range_splitter(a, b):
     - '-' for negative values
     """
     ranges = []
-    # Entire range negative
-    if b < 0:  # a <= 0 implicit
+    if b < 0:
         sign = "-"
         a, b = abs(a), abs(b)
         a, b = (a, b) if a < b else (b, a)
-    # Entire range positive
-    elif a >= 0:  # b >= 0 implicit
+    elif a >= 0:
         sign = ""
-    # Range between negative and positive
     else:
         ranges.extend(__range_splitter(a, -1))
         ranges.extend(__range_splitter(0, b))
@@ -163,12 +254,21 @@ def __range_splitter(a, b):
     return ranges
 
 
-def _float_range_regex(a: DecimalLike, b: DecimalLike) -> str:
-    """
-    Generate a regex that matches decimal numbers in the inclusive range [a, b].
+def _range_ast(a: int, b: int) -> Alternation:
+    a, b = (a, b) if a < b else (b, a)
+    ranges = __range_splitter(a, b)
+    patterns: list[Sequence] = []
+    for start, end, sign in ranges:
+        prefix = [Literal("-")] if sign else []
+        patterns.extend(
+            __compute_numerical_range_ast(str(start), str(end), start_parts=prefix)
+        )
+    return Alternation(tuple(patterns))
 
-    This function is used by ``float_range_regex`` and always emits a decimal
-    pattern (for example, values like ``0.0`` or ``1.25``).
+
+def _float_range_ast(a: DecimalLike, b: DecimalLike) -> Alternation:
+    """
+    Generate a regex AST that matches decimal numbers in the inclusive range [a, b].
     """
     a_decimal = Decimal(str(a))
     b_decimal = Decimal(str(b))
@@ -187,69 +287,101 @@ def _float_range_regex(a: DecimalLike, b: DecimalLike) -> str:
     num_of_decimal_in_b = len(b_string) - (b_string.find(".") + 1)
     max_num_decimal = max(num_of_decimal_in_a, num_of_decimal_in_b)
 
-    # Properly removing floating point and converting to integer
-    a, b = (
-        "".join([c for c in a_string if c != "."]),
-        "".join([c for c in b_string if c != "."]),
+    a_digits, b_digits = (
+        "".join(c for c in a_string if c != "."),
+        "".join(c for c in b_string if c != "."),
     )
-    if len(str(a)) < len(str(b)):
-        a = a + f"{'0'*(max_num_decimal-num_of_decimal_in_a)}"
+    if len(a_digits) < len(b_digits):
+        a_digits = a_digits + ("0" * (max_num_decimal - num_of_decimal_in_a))
     else:
-        b = b + f"{'0'*(max_num_decimal-num_of_decimal_in_b)}"
-    a, b = int(a), int(b)
-    a, b = (a, b) if a < b else (b, a)
+        b_digits = b_digits + ("0" * (max_num_decimal - num_of_decimal_in_b))
 
-    # Generate regex by treating float as integer
-    ranges = __range_splitter(a, b)
-    intermediate_regex = "|".join(
-        [
-            __compute_numerical_range(str(r[0]), str(r[1]), start_appender_str=r[2])
-            for r in ranges
-        ]
+    a_int, b_int = int(a_digits), int(b_digits)
+    a_int, b_int = (a_int, b_int) if a_int < b_int else (b_int, a_int)
+
+    scaled_int_ast = _range_ast(a_int, b_int)
+    new_patterns: list[Sequence] = []
+    for pattern in scaled_int_ast.options:
+        parts = list(pattern.parts)
+        sign_parts: list[NodeType] = []
+        if parts and isinstance(parts[0], Literal) and parts[0].text.startswith("-"):
+            sign_parts = [Literal("-")]
+            leading_rest = parts[0].text[1:]
+            parts = _literal_parts(leading_rest) + parts[1:]
+
+        if len(parts) < max_num_decimal:
+            parts = [Literal("0")] * (max_num_decimal - len(parts)) + parts
+
+        split_index = len(parts) - max_num_decimal
+        non_fractional = parts[:split_index]
+        fractional = parts[split_index:]
+
+        required_fractional: list[NodeType] = [fractional[0]]
+        required_fractional.extend(OptionalNode(token) for token in fractional[1:])
+
+        if non_fractional:
+            non_fractional_parts = non_fractional
+        else:
+            non_fractional_parts = [OptionalNode(Literal("0"))]
+
+        new_patterns.append(
+            Sequence(
+                tuple(
+                    sign_parts
+                    + non_fractional_parts
+                    + [Literal("."), *required_fractional, ZeroOrMore(DigitRange(0, 9))]
+                )
+            )
+        )
+
+    return Alternation(tuple(new_patterns))
+
+
+def _to_decimal(value: DecimalLike) -> Decimal:
+    return Decimal(str(value))
+
+
+def _range_regex(a: int, b: int) -> str:
+    """Generate a regex that matches integers in the inclusive range [a, b]."""
+    return _range_ast(a, b).normalize().render()
+
+
+def _integer_unbounded_ast() -> Alternation:
+    return Alternation(
+        (
+            Sequence((OptionalNode(Literal("-")), DigitRange(1, 9), ZeroOrMore(DigitRange(0, 9)))),
+            Sequence((Literal("0"),)),
+        )
     )
 
-    # Modifying the integer supported regex to support float
-    new_regex = []
-    for p in intermediate_regex.split("|"):
-        x = __tokenize_numeric_pattern(p[1:] if p.startswith("-") else p)
 
-        # If x = ['[0-9]'] and max_num_decimal = 2, We need x = ['0','[0-9]']
-        if len(x) < max_num_decimal:
-            x = (["0"] * (max_num_decimal - len(x))) + x
+def _negative_unbounded_ast() -> Sequence:
+    return Sequence((Literal("-"), DigitRange(1, 9), ZeroOrMore(DigitRange(0, 9))))
 
-        # Example x = ['3', '2', '[0-1]', '[0-9]'] for p=32[0-1][0-9]
-        start_appender_str = "-" if p.startswith("-") else ""
-        # Add a decimal point inbetween, keep the next digit mandatory and others optional (32.[0-1][0-9]?[0-9]*)
-        fractional_part = (
-            [x[-max_num_decimal]] + [z + "?" for z in x[-max_num_decimal + 1 :]]
-            if max_num_decimal > 1
-            else [z for z in x[-max_num_decimal:]]
+
+def _positive_unbounded_ast() -> Sequence:
+    return Sequence((DigitRange(1, 9), ZeroOrMore(DigitRange(0, 9))))
+
+
+def _negative_with_min_digits_ast(extra_digits: int) -> Sequence:
+    return Sequence(
+        (
+            Literal("-"),
+            DigitRange(1, 9),
+            *tuple(DigitRange(0, 9) for _ in range(extra_digits)),
+            ZeroOrMore(DigitRange(0, 9)),
         )
-        non_fractional_part = (
-            "".join(x[:-max_num_decimal]) if "".join(x[:-max_num_decimal]) else "0?"
+    )
+
+
+def _positive_with_min_digits_ast(extra_digits: int) -> Sequence:
+    return Sequence(
+        (
+            DigitRange(1, 9),
+            *tuple(DigitRange(0, 9) for _ in range(extra_digits)),
+            ZeroOrMore(DigitRange(0, 9)),
         )
-        new_regex.append(
-            rf"{start_appender_str}{non_fractional_part}\.{''.join(fractional_part)}\d*"
-        )
-    regex = f"(?:{'|'.join(new_regex)})"
-    return regex
-
-
-def _to_decimal(value: DecimalLike, name: str) -> Decimal:
-    try:
-        return Decimal(str(value))
-    except InvalidOperation as exc:
-        raise TypeError(
-            f"{name} must be int, float, Decimal, or parseable string, got {value!r}"
-        ) from exc
-
-
-def _range_regex(a: int, b: int):
-    """Generate a regex that matches integers in the inclusive range [a, b]."""
-    a, b = (a, b) if a < b else (b, a)
-    ranges = __range_splitter(a, b)
-    regex = f"(?:{'|'.join([__compute_numerical_range(str(r[0]),str(r[1]),start_appender_str=r[2]) for r in ranges])})"
-    return regex
+    )
 
 
 def range_regex(minimum: Optional[int] = None, maximum: Optional[int] = None):
@@ -264,35 +396,36 @@ def range_regex(minimum: Optional[int] = None, maximum: Optional[int] = None):
 
     For floating-point ranges, use ``float_range_regex``.
     """
-
     if minimum is None and maximum is None:
-        return r"-?(?:[1-9]\d*|0)"
+        return _integer_unbounded_ast().normalize().render()
     if minimum is None:
+        assert maximum is not None
         if maximum == 0:
-            return r"(?:-[1-9]\d*|0)"
-        elif maximum > 0:
-            upperbound_regex = _range_regex(0, maximum)
-            return rf"(?:-[1-9]\d*|{upperbound_regex})"
-        else:
-            # choose the smallest number with the same number of digits as lowerbound,
-            # and allow all negative numbers with strictly more digits
-            num_digits = len(str(maximum)) - 1
-            lower_bound = -int("".join(["9"] * num_digits))
-            range_expression = _range_regex(lower_bound, maximum)
-            # now match any number with at least one more digit
-            return rf"(?:{range_expression}|-[1-9]\d{{{num_digits}}}\d*)"
+            return Alternation((_negative_unbounded_ast(), Sequence((Literal("0"),)))).normalize().render()
+        if maximum > 0:
+            upperbound_ast = _range_ast(0, maximum)
+            return Alternation((_negative_unbounded_ast(), *upperbound_ast.options)).normalize().render()
+
+        num_digits = len(str(maximum)) - 1
+        lower_bound = -int("".join(["9"] * num_digits))
+        range_ast = _range_ast(lower_bound, maximum)
+        return Alternation(
+            (*range_ast.options, _negative_with_min_digits_ast(num_digits))
+        ).normalize().render()
     if maximum is None:
+        assert minimum is not None
         if minimum < 0:
-            lowerbound_regex = _range_regex(minimum, 0)
-            return rf"(?:{lowerbound_regex}|[1-9]\d*)"
-        else:
-            # choose the highest number with the same number of digits as upperbound,
-            # and allow all numbers with strictly more digits
-            num_digits = len(str(minimum))
-            upperbound = int("".join(["9"] * num_digits))
-            lowerbound_regex = _range_regex(minimum, upperbound)
-            # now match any number with at least one more digit
-            return rf"(?:{lowerbound_regex}|[1-9]\d{{{num_digits}}}\d*)"
+            lowerbound_ast = _range_ast(minimum, 0)
+            return Alternation((*lowerbound_ast.options, _positive_unbounded_ast())).normalize().render()
+
+        num_digits = len(str(minimum))
+        upperbound = int("".join(["9"] * num_digits))
+        lowerbound_ast = _range_ast(minimum, upperbound)
+        return Alternation(
+            (*lowerbound_ast.options, _positive_with_min_digits_ast(num_digits))
+        ).normalize().render()
+
+    assert minimum is not None and maximum is not None
     return _range_regex(minimum, maximum)
 
 
@@ -309,24 +442,23 @@ def float_range_regex(
     - If ``strict`` is ``False``, both integer and decimal representations are
       matched, as long as their numeric value is in range.
     """
-    minimum_decimal = _to_decimal(minimum, "minimum")
-    maximum_decimal = _to_decimal(maximum, "maximum")
+    minimum_decimal = _to_decimal(minimum)
+    maximum_decimal = _to_decimal(maximum)
 
-    decimal_regex = _float_range_regex(minimum_decimal, maximum_decimal)
+    decimal_ast = _float_range_ast(minimum_decimal, maximum_decimal)
     if strict:
-        return decimal_regex
+        return decimal_ast.normalize().render()
 
-    lower_decimal = minimum_decimal
-    upper_decimal = maximum_decimal
     lower_decimal, upper_decimal = (
-        (lower_decimal, upper_decimal)
-        if lower_decimal < upper_decimal
-        else (upper_decimal, lower_decimal)
+        (minimum_decimal, maximum_decimal)
+        if minimum_decimal < maximum_decimal
+        else (maximum_decimal, minimum_decimal)
     )
     int_lower = int(lower_decimal.to_integral_value(rounding=ROUND_CEILING))
     int_upper = int(upper_decimal.to_integral_value(rounding=ROUND_FLOOR))
     if int_lower > int_upper:
-        return decimal_regex
+        return decimal_ast.normalize().render()
 
-    integer_regex = _range_regex(int_lower, int_upper)
-    return f"(?:{integer_regex}|{decimal_regex})"
+    integer_ast = _range_ast(int_lower, int_upper)
+    combined = Alternation(tuple(integer_ast.options + decimal_ast.options)).normalize()
+    return combined.render()

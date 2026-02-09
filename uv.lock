@@ -116,10 +116,6 @@ wheels = [
 name = "range-ex"
 version = "0.0.3"
 source = { editable = "." }
-dependencies = [
-    { name = "hypothesis" },
-    { name = "pytest-xdist" },
-]
 
 [package.optional-dependencies]
 dev = [
@@ -130,10 +126,8 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "hypothesis", specifier = ">=6.151.5" },
     { name = "hypothesis", marker = "extra == 'dev'" },
     { name = "pytest", marker = "extra == 'dev'" },
-    { name = "pytest-xdist", specifier = ">=3.8.0" },
     { name = "pytest-xdist", marker = "extra == 'dev'" },
 ]
 provides-extras = ["dev"]
