@@ -24,8 +24,8 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/nielstron/range_ex"
-Repository = "https://github.com/nielstron/range_ex"
+Homepage = "https://github.com/nielstron/range-ex"
+Repository = "https://github.com/nielstron/range-ex"
 
 [project.optional-dependencies]
 dev = [
