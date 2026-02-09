@@ -42,33 +42,66 @@ class DigitRange(Node):
         return f"[{self.start}-{self.end}]"
 
     def normalize(self) -> "Node":
+        # Collapse singleton digit ranges like [7-7] into a literal node.
         if self.start == self.end:
             return Literal(str(self.start))
         return self
 
 
 @dataclass(frozen=True)
-class OptionalNode(Node):
+class FixedRepetition(Node):
     node: Node
+    min_repeats: int
+    max_repeats: Optional[int] = None
+
+    def __post_init__(self) -> None:
+        if self.min_repeats < 0:
+            raise ValueError("min_repeats must be >= 0")
+        if self.max_repeats is not None and self.max_repeats < self.min_repeats:
+            raise ValueError("max_repeats must be >= min_repeats")
 
     def render(self, capturing: bool = False) -> str:
-        open_group = "(" if capturing else "(?:"
-        return f"{open_group}{self.node.render(capturing=capturing)})?"
+        inner = self.node.render(capturing=capturing)
+        if isinstance(self.node, Literal) and len(self.node.text) == 1:
+            base = inner
+        elif isinstance(self.node, DigitRange):
+            base = inner
+        else:
+            open_group = "(" if capturing else "(?:"
+            base = f"{open_group}{inner})"
+        if self.min_repeats == 0 and self.max_repeats == 1:
+            quantifier = "?"
+        elif self.min_repeats == 0 and self.max_repeats is None:
+            quantifier = "*"
+        elif self.min_repeats == 1 and self.max_repeats is None:
+            quantifier = "+"
+        elif self.max_repeats is not None and self.min_repeats == self.max_repeats:
+            quantifier = f"{{{self.min_repeats}}}"
+        elif self.max_repeats is None:
+            quantifier = f"{{{self.min_repeats},}}"
+        else:
+            quantifier = f"{{{self.min_repeats},{self.max_repeats}}}"
+        return f"{base}{quantifier}"
 
     def normalize(self) -> "Node":
-        return OptionalNode(self.node.normalize())
-
-
-@dataclass(frozen=True)
-class ZeroOrMore(Node):
-    node: Node
-
-    def render(self, capturing: bool = False) -> str:
-        open_group = "(" if capturing else "(?:"
-        return f"{open_group}{self.node.render(capturing=capturing)})*"
-
-    def normalize(self) -> "Node":
-        return ZeroOrMore(self.node.normalize())
+        # Normalize repeated child and fold nested fixed repetitions.
+        normalized_child = self.node.normalize()
+        if self.min_repeats == 1 and self.max_repeats == 1:
+            return normalized_child
+        if (
+            isinstance(normalized_child, FixedRepetition)
+            and self.max_repeats is not None
+            and self.min_repeats == self.max_repeats
+            and normalized_child.max_repeats is not None
+            and normalized_child.min_repeats == normalized_child.max_repeats
+        ):
+            multiplier = self.min_repeats
+            return FixedRepetition(
+                normalized_child.node,
+                normalized_child.min_repeats * multiplier,
+                normalized_child.max_repeats * multiplier,
+            )
+        return FixedRepetition(normalized_child, self.min_repeats, self.max_repeats)
 
 
 @dataclass(frozen=True)
@@ -79,17 +112,67 @@ class Sequence(Node):
         return "".join(part.render(capturing=capturing) for part in self.parts)
 
     def normalize(self) -> "Node":
+        # Normalize each child first so deep rewrites happen bottom-up.
         normalized_parts = [part.normalize() for part in self.parts]
-        merged_parts: list[Node] = []
+        flattened_parts: list[Node] = []
         for part in normalized_parts:
+            # Flatten nested sequences: (ab)(cd) -> abcd in the AST.
+            if isinstance(part, Sequence):
+                flattened_parts.extend(part.parts)
+            else:
+                flattened_parts.append(part)
+        merged_parts: list[Node] = flattened_parts[:1]
+        for part in flattened_parts[1:]:
+            # Merge adjacent literals into one node to reduce AST noise.
+            prev = merged_parts[-1]
             if (
-                merged_parts
-                and isinstance(merged_parts[-1], Literal)
+                isinstance(prev, Literal)
                 and isinstance(part, Literal)
             ):
-                merged_parts[-1] = Literal(merged_parts[-1].text + part.text)
-            else:
-                merged_parts.append(part)
+                merged_parts[-1] = Literal(prev.text + part.text)
+                continue
+            # Convert adjacent identical nodes into fixed repetitions.
+            if (
+                isinstance(prev, (Literal, DigitRange))
+                and isinstance(part, (Literal, DigitRange))
+                and prev == part
+            ):
+                merged_parts[-1] = FixedRepetition(part, 2).normalize()
+                continue
+            # Extend an existing fixed repetition when the same node follows.
+            if (
+                isinstance(prev, FixedRepetition)
+                and isinstance(part, (Literal, DigitRange))
+                and prev.node == part
+            ):
+                max_repeats = None if prev.max_repeats is None else prev.max_repeats + 1
+                merged_parts[-1] = FixedRepetition(prev.node, prev.min_repeats + 1, max_repeats)
+                continue
+            # Merge two adjacent fixed repetitions of the same node.
+            if (
+                isinstance(prev, FixedRepetition)
+                and isinstance(part, FixedRepetition)
+                and prev.node == part.node
+            ):
+                max_repeats = (
+                    None
+                    if prev.max_repeats is None or part.max_repeats is None
+                    else prev.max_repeats + part.max_repeats
+                )
+                merged_parts[-1] = FixedRepetition(
+                    part.node, prev.min_repeats + part.min_repeats, max_repeats
+                )
+                continue
+            # Merge x + x{n} into x{n+1}.
+            if (
+                isinstance(prev, (Literal, DigitRange))
+                and isinstance(part, FixedRepetition)
+                and prev == part.node
+            ):
+                max_repeats = None if part.max_repeats is None else part.max_repeats + 1
+                merged_parts[-1] = FixedRepetition(part.node, part.min_repeats + 1, max_repeats)
+                continue
+            merged_parts.append(part)
         return Sequence(tuple(merged_parts))
 
 
@@ -102,15 +185,16 @@ class Alternation(Node):
         return f"{open_group}{'|'.join(option.render(capturing=capturing) for option in self.options)})"
 
     def normalize(self) -> Node:
+        # Normalize options first so each branch is internally simplified.
         normalized_options = [option.normalize() for option in self.options]
-        seen: set[str] = set()
-        unique_options: list[Node] = []
+        flattened_options: list[Node] = []
         for option in normalized_options:
-            key = option.render()
-            if key not in seen:
-                seen.add(key)
-                unique_options.append(option)
-        return Alternation(tuple(unique_options))
+            # Flatten nested alternations: (a|(b|c)) -> (a|b|c).
+            if isinstance(option, Alternation):
+                flattened_options.extend(option.options)
+            else:
+                flattened_options.append(option)
+        return Alternation(tuple(flattened_options))
 
 
 def _literal_parts(text: str) -> list[Node]:
@@ -118,12 +202,20 @@ def _literal_parts(text: str) -> list[Node]:
 
 
 def _any_digits(count: int) -> list[Node]:
-    return [DigitRange(0, 9) for _ in range(count)]
+    if count <= 0:
+        return []
+    if count == 1:
+        return [DigitRange(0, 9)]
+    return [FixedRepetition(DigitRange(0, 9), count, count)]
 
 
 def _as_parts(node: Node) -> list[Node]:
     if isinstance(node, Sequence):
         return list(node.parts)
+    if isinstance(node, FixedRepetition):
+        if node.max_repeats is not None and node.min_repeats == node.max_repeats:
+            return [node.node for _ in range(node.min_repeats)]
+        return [node]
     return [node]
 
 
@@ -288,7 +380,14 @@ def _range_ast(a: int, b: int) -> Node:
     return _alt(*patterns)
 
 
-def _float_range_ast(a: DecimalLike, b: DecimalLike) -> Node:
+def _fractional_precision(value: Decimal) -> int:
+    text = format(value, "f")
+    if "." not in text:
+        return 0
+    return len(text) - (text.find(".") + 1)
+
+
+def _float_range_ast(a: DecimalLike, b: DecimalLike, trailing_any: bool = True) -> Node:
     """
     Generate a regex AST that matches decimal numbers in the inclusive range [a, b].
     """
@@ -325,6 +424,16 @@ def _float_range_ast(a: DecimalLike, b: DecimalLike) -> Node:
     new_patterns: list[Node] = []
     for pattern_node in _options(scaled_int_ast):
         parts = _as_parts(pattern_node)
+        expanded_parts: list[Node] = []
+        for part in parts:
+            if isinstance(part, FixedRepetition):
+                if part.max_repeats is not None and part.min_repeats == part.max_repeats:
+                    expanded_parts.extend(part.node for _ in range(part.min_repeats))
+                else:
+                    expanded_parts.append(part)
+            else:
+                expanded_parts.append(part)
+        parts = expanded_parts
         sign_parts: list[Node] = []
         if parts and isinstance(parts[0], Literal) and parts[0].text.startswith("-"):
             sign_parts = [Literal("-")]
@@ -339,12 +448,18 @@ def _float_range_ast(a: DecimalLike, b: DecimalLike) -> Node:
         fractional = parts[split_index:]
 
         required_fractional: list[Node] = [fractional[0]]
-        required_fractional.extend(OptionalNode(token) for token in fractional[1:])
+        required_fractional.extend(FixedRepetition(token, 0, 1) for token in fractional[1:])
 
         if non_fractional:
             non_fractional_parts = non_fractional
         else:
-            non_fractional_parts = [OptionalNode(Literal("0"))]
+            non_fractional_parts = [FixedRepetition(Literal("0"), 0, 1)]
+
+        trailing_node: Node
+        if trailing_any:
+            trailing_node = FixedRepetition(DigitRange(0, 9), 0, None)
+        else:
+            trailing_node = FixedRepetition(Literal("0"), 0, None)
 
         new_patterns.append(
             _seq(
@@ -352,7 +467,7 @@ def _float_range_ast(a: DecimalLike, b: DecimalLike) -> Node:
                 *non_fractional_parts,
                 Literal("."),
                 *required_fractional,
-                ZeroOrMore(DigitRange(0, 9)),
+                trailing_node,
             )
         )
 
@@ -375,7 +490,7 @@ def _positive_with_min_digits_ast(extra_digits: int) -> Node:
     return _seq(
         DigitRange(1, 9),
         *tuple(DigitRange(0, 9) for _ in range(extra_digits)),
-        ZeroOrMore(DigitRange(0, 9)),
+        FixedRepetition(DigitRange(0, 9), 0, None),
     )
 
 def _positive_unbounded_ast() -> Node:
@@ -399,18 +514,18 @@ def _strict_decimal_unbounded_ast() -> Node:
     integer_part = _alt(Literal("0"), _positive_unbounded_ast())
     return _alt(
         _seq(
-            OptionalNode(Literal("-")),
+            FixedRepetition(Literal("-"), 0, 1),
             integer_part,
             Literal("."),
             DigitRange(0, 9),
-            ZeroOrMore(DigitRange(0, 9)),
+            FixedRepetition(DigitRange(0, 9), 0, None),
         ),
-        _seq(OptionalNode(Literal("-")), integer_part, Literal(".")),
+        _seq(FixedRepetition(Literal("-"), 0, 1), integer_part, Literal(".")),
         _seq(
-            OptionalNode(Literal("-")),
+            FixedRepetition(Literal("-"), 0, 1),
             Literal("."),
             DigitRange(0, 9),
-            ZeroOrMore(DigitRange(0, 9)),
+            FixedRepetition(DigitRange(0, 9), 0, None),
         ),
     )
 
@@ -420,13 +535,19 @@ def _negative_strict_decimal_with_min_int_digits_ast(extra_digits: int) -> Node:
 
 
 def _positive_strict_decimal_with_min_int_digits_ast(extra_digits: int) -> Node:
-    return _seq(
+    integer_part = _seq(
         DigitRange(1, 9),
         *tuple(DigitRange(0, 9) for _ in range(extra_digits)),
-        ZeroOrMore(DigitRange(0, 9)),
-        Literal("."),
-        DigitRange(0, 9),
-        ZeroOrMore(DigitRange(0, 9)),
+        FixedRepetition(DigitRange(0, 9), 0, None),
+    )
+    return _alt(
+        _seq(
+            integer_part,
+            Literal("."),
+            DigitRange(0, 9),
+            FixedRepetition(DigitRange(0, 9), 0, None),
+        ),
+        _seq(integer_part, Literal(".")),
     )
 
 
@@ -493,7 +614,8 @@ def _float_range_from_bounds_ast(
 
         integer_upper = int(maximum_decimal.to_integral_value(rounding=ROUND_FLOOR))
         integer_ast = _range_from_bounds_ast(None, integer_upper)
-        return _alt(integer_ast, decimal_ast)
+        integer_dot_ast = _seq(integer_ast, Literal("."))
+        return _alt(integer_ast, integer_dot_ast, decimal_ast)
 
     if maximum is None:
         minimum_decimal = _to_decimal(minimum, "minimum")
@@ -502,7 +624,7 @@ def _float_range_from_bounds_ast(
             decimal_ast = _alt(bounded, _positive_strict_decimal_with_min_int_digits_ast(0))
         else:
             int_digits = len(str(int(minimum_decimal.to_integral_value(rounding=ROUND_FLOOR))))
-            upper = (Decimal(10) ** int_digits) - Decimal("1")
+            upper = Decimal(10) ** int_digits
             bounded = _float_range_ast(minimum_decimal, upper)
             decimal_ast = _alt(bounded, _positive_strict_decimal_with_min_int_digits_ast(int_digits))
 
@@ -511,26 +633,44 @@ def _float_range_from_bounds_ast(
 
         integer_lower = int(minimum_decimal.to_integral_value(rounding=ROUND_CEILING))
         integer_ast = _range_from_bounds_ast(integer_lower, None)
-        return _alt(integer_ast, decimal_ast)
+        integer_dot_ast = _seq(integer_ast, Literal("."))
+        return _alt(integer_ast, integer_dot_ast, decimal_ast)
 
     minimum_decimal = _to_decimal(minimum, "minimum")
     maximum_decimal = _to_decimal(maximum, "maximum")
-    decimal_ast = _float_range_ast(minimum_decimal, maximum_decimal)
-    if strict:
-        return decimal_ast
-
     lower_decimal, upper_decimal = (
         (minimum_decimal, maximum_decimal)
         if minimum_decimal < maximum_decimal
         else (maximum_decimal, minimum_decimal)
     )
+
+    decimal_ast: Node
+    if upper_decimal > 0:
+        precision = max(
+            1,
+            _fractional_precision(lower_decimal),
+            _fractional_precision(upper_decimal),
+        )
+        step = Decimal(1).scaleb(-precision)
+        interior_upper = upper_decimal - step
+        parts: list[Node] = []
+        if lower_decimal <= interior_upper:
+            parts.append(_float_range_ast(lower_decimal, interior_upper, trailing_any=True))
+        parts.append(_float_range_ast(upper_decimal, upper_decimal, trailing_any=False))
+        decimal_ast = _alt(*parts)
+    else:
+        decimal_ast = _float_range_ast(lower_decimal, upper_decimal, trailing_any=True)
+    if strict:
+        return decimal_ast
+
     int_lower = int(lower_decimal.to_integral_value(rounding=ROUND_CEILING))
     int_upper = int(upper_decimal.to_integral_value(rounding=ROUND_FLOOR))
     if int_lower > int_upper:
         return decimal_ast
 
     integer_ast = _range_ast(int_lower, int_upper)
-    return _alt(integer_ast, decimal_ast)
+    integer_dot_ast = _seq(integer_ast, Literal("."))
+    return _alt(integer_ast, integer_dot_ast, decimal_ast)
 
 
 def range_regex(

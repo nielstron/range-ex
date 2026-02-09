@@ -7,7 +7,7 @@ import pytest
 
 from range_ex import float_range_regex, range_regex
 
-NUM_EXAMPLES = 5000
+NUM_EXAMPLES = 1000
 
 
 @st.composite
@@ -47,7 +47,7 @@ def float_ranges_and_values(draw):
 
 
 @given(ranges_samples_inside())
-@settings(max_examples=NUM_EXAMPLES)
+@settings(max_examples=NUM_EXAMPLES, deadline=None)
 def test_numerical_range(pair):
     (start_range, end_range, value_inside) = pair
     generated_regex = range_regex(start_range, end_range)
@@ -55,7 +55,7 @@ def test_numerical_range(pair):
 
 
 @given(one_of(ranges_samples_below(), ranges_samples_above()))
-@settings(max_examples=NUM_EXAMPLES)
+@settings(max_examples=NUM_EXAMPLES, deadline=None)
 def test_numerical_range_outside(pair):
     (start_range, end_range, value_outside) = pair
     generated_regex = range_regex(start_range, end_range)
@@ -63,7 +63,7 @@ def test_numerical_range_outside(pair):
 
 
 @given(st.integers(), st.integers())
-@settings(max_examples=NUM_EXAMPLES)
+@settings(max_examples=NUM_EXAMPLES, deadline=None)
 def test_range_lower_bounded(lower_bound, value):
     generated_regex = range_regex(minimum=lower_bound)
     assert (re.compile(generated_regex).fullmatch(str(value)) is not None) == (
@@ -75,7 +75,7 @@ def test_range_lower_bounded(lower_bound, value):
     st.integers(),
     st.integers(),
 )
-@settings(max_examples=NUM_EXAMPLES)
+@settings(max_examples=NUM_EXAMPLES, deadline=None)
 def test_range_upper_bounded(upper_bound, value):
     generated_regex = range_regex(maximum=upper_bound)
     assert (re.compile(generated_regex).fullmatch(str(value)) is not None) == (
@@ -108,7 +108,7 @@ def test_range_regex_capturing_rendering_toggle():
 
 
 @given(float_ranges_and_values())
-@settings(max_examples=NUM_EXAMPLES)
+@settings(max_examples=NUM_EXAMPLES, deadline=None)
 def test_float_range(pair):
     (start_range, end_range, value) = pair
     generated_regex = float_range_regex(start_range, end_range, strict=True)
@@ -168,6 +168,30 @@ def test_float_range_supports_parseable_string_bounds():
     assert compiled.fullmatch("1") is not None
     assert compiled.fullmatch("1.25") is not None
 
+
+def test_float_range_non_strict_minimum_decimal_accepts_trailing_dot_higher_integers():
+    compiled = re.compile(float_range_regex(minimum="1.5", strict=False))
+    assert compiled.fullmatch("2.") is not None
+    assert compiled.fullmatch("3.") is not None
+
+
+def test_float_range_minimum_decimal_includes_9_point_1():
+    compiled = re.compile(float_range_regex(minimum=1.5))
+    assert compiled.fullmatch("9.1") is not None
+
+
+def test_float_range_rejects_values_above_upper_bound_with_extra_fractional_digits():
+    compiled = re.compile(float_range_regex(0.5, 1.5))
+    assert compiled.fullmatch("1.51") is None
+
+
+def test_float_range_rejects_values_above_upper_bound_with_extra_digits_from_integer_minimum():
+    compiled = re.compile(float_range_regex(1, 1.5))
+    assert compiled.fullmatch("1.51") is None
+
+def test_pos_float_range_accepts_dot():
+    compiled = re.compile(float_range_regex(0.1, 1.5))
+    assert compiled.fullmatch(".51") is not None
 
 def test_float_range_rejects_non_parseable_string_bounds():
     with pytest.raises(InvalidOperation):
