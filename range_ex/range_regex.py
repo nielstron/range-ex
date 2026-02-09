@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import operator
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_FLOOR
+from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 from typing import Optional, Union
 
 DecimalLike = Union[int, float, Decimal, str]
@@ -337,7 +338,8 @@ def _float_range_ast(a: DecimalLike, b: DecimalLike) -> Alternation:
     return Alternation(tuple(new_patterns))
 
 
-def _to_decimal(value: DecimalLike) -> Decimal:
+def _to_decimal(value: DecimalLike, name: str) -> Decimal:
+    _ = name
     return Decimal(str(value))
 
 
@@ -345,22 +347,28 @@ def _range_regex(a: int, b: int) -> str:
     """Generate a regex that matches integers in the inclusive range [a, b]."""
     return _range_ast(a, b).normalize().render()
 
+def _zero() -> Literal:
+    return Literal("0")
+
 
 def _integer_unbounded_ast() -> Alternation:
     return Alternation(
         (
-            Sequence((OptionalNode(Literal("-")), DigitRange(1, 9), ZeroOrMore(DigitRange(0, 9)))),
-            Sequence((Literal("0"),)),
+            _negative_unbounded_ast(),
         )
     )
 
-
-def _negative_unbounded_ast() -> Sequence:
-    return Sequence((Literal("-"), DigitRange(1, 9), ZeroOrMore(DigitRange(0, 9))))
-
+def _positive_with_min_digits_ast(extra_digits: int) -> Sequence:
+    return Sequence(
+        (
+            DigitRange(1, 9),
+            *tuple(DigitRange(0, 9) for _ in range(extra_digits)),
+            ZeroOrMore(DigitRange(0, 9)),
+        )
+    )
 
 def _positive_unbounded_ast() -> Sequence:
-    return Sequence((DigitRange(1, 9), ZeroOrMore(DigitRange(0, 9))))
+    return _positive_with_min_digits_ast(0)
 
 
 def _negative_with_min_digits_ast(extra_digits: int) -> Sequence:
@@ -374,14 +382,164 @@ def _negative_with_min_digits_ast(extra_digits: int) -> Sequence:
     )
 
 
-def _positive_with_min_digits_ast(extra_digits: int) -> Sequence:
+def _negative_unbounded_ast() -> Sequence:
+    return _negative_with_min_digits_ast(0)
+
+
+def _strict_decimal_unbounded_ast() -> Alternation:
+    # -?(?:0|[1-9]\d*)\.\d\d*
+    integer_part = _positive_unbounded_ast()
+    return Alternation(
+        (
+            Sequence(
+                (
+                    OptionalNode(Literal("-")),
+                    integer_part,
+                    Literal("."),
+                    DigitRange(0, 9),
+                    ZeroOrMore(DigitRange(0, 9)),
+                )
+            ),
+        )
+    )
+
+
+def _negative_strict_decimal_with_min_int_digits_ast(extra_digits: int) -> Sequence:
+    return Sequence(
+        (
+            Literal("-"),
+            DigitRange(1, 9),
+            *tuple(DigitRange(0, 9) for _ in range(extra_digits)),
+            ZeroOrMore(DigitRange(0, 9)),
+            Literal("."),
+            DigitRange(0, 9),
+            ZeroOrMore(DigitRange(0, 9)),
+        )
+    )
+
+
+def _positive_strict_decimal_with_min_int_digits_ast(extra_digits: int) -> Sequence:
     return Sequence(
         (
             DigitRange(1, 9),
             *tuple(DigitRange(0, 9) for _ in range(extra_digits)),
             ZeroOrMore(DigitRange(0, 9)),
+            Literal("."),
+            DigitRange(0, 9),
+            ZeroOrMore(DigitRange(0, 9)),
         )
     )
+
+
+def _range_from_bounds_ast(minimum: Optional[int], maximum: Optional[int]) -> Alternation:
+    if minimum is not None:
+        minimum = operator.index(minimum)
+    if maximum is not None:
+        maximum = operator.index(maximum)
+
+    if minimum is None and maximum is None:
+        return _integer_unbounded_ast()
+    if minimum is None:
+        assert maximum is not None
+        if maximum == 0:
+            return Alternation((_negative_unbounded_ast(), Sequence((Literal("0"),))))
+        if maximum > 0:
+            upperbound_ast = _range_ast(0, maximum)
+            return Alternation((_negative_unbounded_ast(), *upperbound_ast.options))
+
+        num_digits = len(str(maximum)) - 1
+        lower_bound = -int("".join(["9"] * num_digits))
+        range_ast = _range_ast(lower_bound, maximum)
+        return Alternation((*range_ast.options, _negative_with_min_digits_ast(num_digits)))
+    if maximum is None:
+        assert minimum is not None
+        if minimum < 0:
+            lowerbound_ast = _range_ast(minimum, 0)
+            return Alternation((*lowerbound_ast.options, _positive_unbounded_ast()))
+
+        num_digits = len(str(minimum))
+        upperbound = int("".join(["9"] * num_digits))
+        lowerbound_ast = _range_ast(minimum, upperbound)
+        return Alternation((*lowerbound_ast.options, _positive_with_min_digits_ast(num_digits)))
+
+    assert minimum is not None and maximum is not None
+    return _range_ast(minimum, maximum)
+
+
+def _float_range_from_bounds_ast(
+    minimum: Optional[DecimalLike],
+    maximum: Optional[DecimalLike],
+    strict: bool,
+) -> Alternation:
+    if minimum is None and maximum is None:
+        decimal_ast = _strict_decimal_unbounded_ast()
+        if strict:
+            return decimal_ast
+        return Alternation(tuple(_integer_unbounded_ast().options + decimal_ast.options))
+
+    if minimum is None:
+        assert maximum is not None
+        maximum_decimal = _to_decimal(maximum, "maximum")
+        if maximum_decimal >= 0:
+            bounded = _float_range_ast(Decimal("0.0"), maximum_decimal)
+            decimal_ast = Alternation(
+                (_negative_strict_decimal_with_min_int_digits_ast(0), *bounded.options)
+            )
+        else:
+            int_digits = len(str(int(abs(maximum_decimal).to_integral_value(rounding=ROUND_FLOOR))))
+            lower = -(Decimal(10) ** int_digits) + Decimal("1")
+            bounded = _float_range_ast(lower, maximum_decimal)
+            decimal_ast = Alternation(
+                (*bounded.options, _negative_strict_decimal_with_min_int_digits_ast(int_digits))
+            )
+
+        if strict:
+            return decimal_ast
+
+        integer_upper = int(maximum_decimal.to_integral_value(rounding=ROUND_FLOOR))
+        integer_ast = _range_from_bounds_ast(None, integer_upper)
+        return Alternation(tuple(integer_ast.options + decimal_ast.options))
+
+    if maximum is None:
+        minimum_decimal = _to_decimal(minimum, "minimum")
+        if minimum_decimal <= 0:
+            bounded = _float_range_ast(minimum_decimal, Decimal("0.0"))
+            decimal_ast = Alternation(
+                (*bounded.options, _positive_strict_decimal_with_min_int_digits_ast(0))
+            )
+        else:
+            int_digits = len(str(int(minimum_decimal.to_integral_value(rounding=ROUND_FLOOR))))
+            upper = (Decimal(10) ** int_digits) - Decimal("1")
+            bounded = _float_range_ast(minimum_decimal, upper)
+            decimal_ast = Alternation(
+                (*bounded.options, _positive_strict_decimal_with_min_int_digits_ast(int_digits))
+            )
+
+        if strict:
+            return decimal_ast
+
+        integer_lower = int(minimum_decimal.to_integral_value(rounding=ROUND_CEILING))
+        integer_ast = _range_from_bounds_ast(integer_lower, None)
+        return Alternation(tuple(integer_ast.options + decimal_ast.options))
+
+    minimum_decimal = _to_decimal(minimum, "minimum")
+    maximum_decimal = _to_decimal(maximum, "maximum")
+    decimal_ast = _float_range_ast(minimum_decimal, maximum_decimal)
+    if strict:
+        return decimal_ast
+
+    lower_decimal, upper_decimal = (
+        (minimum_decimal, maximum_decimal)
+        if minimum_decimal < maximum_decimal
+        else (maximum_decimal, minimum_decimal)
+    )
+    int_lower = int(lower_decimal.to_integral_value(rounding=ROUND_CEILING))
+    int_upper = int(upper_decimal.to_integral_value(rounding=ROUND_FLOOR))
+    if int_lower > int_upper:
+        return decimal_ast
+
+    integer_ast = _range_ast(int_lower, int_upper)
+    return Alternation(tuple(integer_ast.options + decimal_ast.options))
 
 
 def range_regex(minimum: Optional[int] = None, maximum: Optional[int] = None):
@@ -396,41 +554,13 @@ def range_regex(minimum: Optional[int] = None, maximum: Optional[int] = None):
 
     For floating-point ranges, use ``float_range_regex``.
     """
-    if minimum is None and maximum is None:
-        return _integer_unbounded_ast().normalize().render()
-    if minimum is None:
-        assert maximum is not None
-        if maximum == 0:
-            return Alternation((_negative_unbounded_ast(), Sequence((Literal("0"),)))).normalize().render()
-        if maximum > 0:
-            upperbound_ast = _range_ast(0, maximum)
-            return Alternation((_negative_unbounded_ast(), *upperbound_ast.options)).normalize().render()
-
-        num_digits = len(str(maximum)) - 1
-        lower_bound = -int("".join(["9"] * num_digits))
-        range_ast = _range_ast(lower_bound, maximum)
-        return Alternation(
-            (*range_ast.options, _negative_with_min_digits_ast(num_digits))
-        ).normalize().render()
-    if maximum is None:
-        assert minimum is not None
-        if minimum < 0:
-            lowerbound_ast = _range_ast(minimum, 0)
-            return Alternation((*lowerbound_ast.options, _positive_unbounded_ast())).normalize().render()
-
-        num_digits = len(str(minimum))
-        upperbound = int("".join(["9"] * num_digits))
-        lowerbound_ast = _range_ast(minimum, upperbound)
-        return Alternation(
-            (*lowerbound_ast.options, _positive_with_min_digits_ast(num_digits))
-        ).normalize().render()
-
-    assert minimum is not None and maximum is not None
-    return _range_regex(minimum, maximum)
+    return _range_from_bounds_ast(minimum, maximum).normalize().render()
 
 
 def float_range_regex(
-    minimum: DecimalLike, maximum: DecimalLike, strict: bool = True
+    minimum: Optional[DecimalLike] = None,
+    maximum: Optional[DecimalLike] = None,
+    strict: bool = True,
 ) -> str:
     """
     Generate a regex for matching decimal numbers in an inclusive range.
@@ -442,18 +572,4 @@ def float_range_regex(
     - If ``strict`` is ``False``, both integer and decimal representations are
       matched, as long as their numeric value is in range.
     """
-    minimum_decimal = _to_decimal(minimum)
-    maximum_decimal = _to_decimal(maximum)
-
-    decimal_ast = _float_range_ast(minimum_decimal, maximum_decimal)
-    if strict:
-        return decimal_ast.normalize().render()
-
-    int_lower = int(minimum_decimal.to_integral_value(rounding=ROUND_CEILING))
-    int_upper = int(maximum_decimal.to_integral_value(rounding=ROUND_FLOOR))
-    if int_lower > int_upper:
-        return decimal_ast.normalize().render()
-
-    integer_ast = _range_ast(int_lower, int_upper)
-    combined = Alternation(tuple(integer_ast.options + decimal_ast.options)).normalize()
-    return combined.render()
+    return _float_range_from_bounds_ast(minimum, maximum, strict).normalize().render()

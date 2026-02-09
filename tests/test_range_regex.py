@@ -1,4 +1,4 @@
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 import re
 
 from hypothesis import given, strategies as st, settings
@@ -152,5 +152,5 @@ def test_float_range_supports_parseable_string_bounds():
 
 
 def test_float_range_rejects_non_parseable_string_bounds():
-    with pytest.raises(TypeError):
+    with pytest.raises(InvalidOperation):
         float_range_regex("foo", "1.5")
