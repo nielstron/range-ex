@@ -46,6 +46,14 @@ def float_ranges_and_values(draw):
     return (lower_bound / 10, upper_bound / 10, value / 10)
 
 
+@st.composite
+def optional_float_bounds_and_integer(draw):
+    minimum_tenths = draw(st.one_of(st.none(), st.integers(min_value=-1000, max_value=1000)))
+    maximum_tenths = draw(st.one_of(st.none(), st.integers(min_value=-1000, max_value=1000)))
+    integer_value = draw(st.integers(min_value=-2000, max_value=2000))
+    return minimum_tenths, maximum_tenths, integer_value
+
+
 @given(ranges_samples_inside())
 @settings(max_examples=NUM_EXAMPLES, deadline=None)
 def test_numerical_range(pair):
@@ -101,6 +109,12 @@ def test_redundant_single_value_ranges_are_collapsed():
     assert re.search(r"\[([0-9])-\1\]", generated_regex) is None
 
 
+def test_range_regex_with_reversed_bounds_is_empty():
+    compiled = re.compile(range_regex(5, 4))
+    assert compiled.fullmatch("4") is None
+    assert compiled.fullmatch("5") is None
+
+
 def test_range_regex_capturing_rendering_toggle():
     assert "(?:" in range_regex(-65, 12, capturing=False)
     assert "(?:" not in range_regex(-65, 12, capturing=True)
@@ -114,6 +128,26 @@ def test_float_range(pair):
     generated_regex = float_range_regex(start_range, end_range, strict=True)
     matched = re.compile(generated_regex).fullmatch(f"{value:.1f}") is not None
     assert matched == (start_range <= value <= end_range)
+
+
+@given(optional_float_bounds_and_integer(), st.booleans())
+@settings(max_examples=NUM_EXAMPLES, deadline=None)
+def test_float_range_dot_integer_forms_follow_numeric_bounds(data, strict):
+    minimum_tenths, maximum_tenths, integer_value = data
+    minimum = None if minimum_tenths is None else minimum_tenths / 10
+    maximum = None if maximum_tenths is None else maximum_tenths / 10
+
+    generated_regex = float_range_regex(minimum=minimum, maximum=maximum, strict=strict)
+    matched = re.compile(generated_regex).fullmatch(f"{integer_value}.") is not None
+
+    if minimum is not None and maximum is not None and minimum > maximum:
+        assert matched is False
+        return
+
+    value = Decimal(integer_value)
+    lower_ok = minimum is None or value >= Decimal(str(minimum))
+    upper_ok = maximum is None or value <= Decimal(str(maximum))
+    assert matched == (lower_ok and upper_ok)
 
 
 def test_range_regex_does_not_match_decimal_strings():
@@ -149,6 +183,20 @@ def test_float_range_bounded_strict_accepts_trailing_dot_for_integers_in_range()
 def test_float_range_bounded_strict_accepts_trailing_dot_for_inner_integer():
     compiled = re.compile(float_range_regex(0.5, 1.5, strict=True))
     assert compiled.fullmatch("1.") is not None
+
+
+def test_float_range_minimum_only_strict_accepts_trailing_dot_integers():
+    compiled = re.compile(float_range_regex(minimum=2, strict=True))
+    assert compiled.fullmatch("2.") is not None
+    assert compiled.fullmatch("3.") is not None
+    assert compiled.fullmatch("1.") is None
+
+
+def test_float_range_maximum_only_strict_accepts_trailing_dot_integers():
+    compiled = re.compile(float_range_regex(maximum=-2, strict=True))
+    assert compiled.fullmatch("-2.") is not None
+    assert compiled.fullmatch("-3.") is not None
+    assert compiled.fullmatch("-1.") is None
 
 
 def test_float_range_non_strict_matches_int_and_decimal():
@@ -212,3 +260,9 @@ def test_pos_float_range_accepts_dot():
 def test_float_range_rejects_non_parseable_string_bounds():
     with pytest.raises(InvalidOperation):
         float_range_regex("foo", "1.5")
+
+
+def test_float_range_with_reversed_bounds_is_empty():
+    compiled = re.compile(float_range_regex(1.5, 1.0))
+    assert compiled.fullmatch("1.0") is None
+    assert compiled.fullmatch("1.5") is None

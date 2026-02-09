@@ -20,6 +20,13 @@ class Node(ABC):
 
 
 @dataclass(frozen=True)
+class Empty(Node):
+    def render(self, capturing: bool = False) -> str:
+        _ = capturing
+        return r"(?!)"
+
+
+@dataclass(frozen=True)
 class Literal(Node):
     text: str
 
@@ -556,6 +563,8 @@ def _range_from_bounds_ast(minimum: Optional[int], maximum: Optional[int]) -> No
         minimum = operator.index(minimum)
     if maximum is not None:
         maximum = operator.index(maximum)
+    if minimum is not None and maximum is not None and minimum > maximum:
+        return Empty()
 
     if minimum is None and maximum is None:
         return _integer_unbounded_ast()
@@ -610,7 +619,9 @@ def _float_range_from_bounds_ast(
             decimal_ast = _alt(bounded, _negative_strict_decimal_with_min_int_digits_ast(int_digits))
 
         if strict:
-            return decimal_ast
+            integer_upper = int(maximum_decimal.to_integral_value(rounding=ROUND_FLOOR))
+            integer_dot_ast = _seq(_range_from_bounds_ast(None, integer_upper), Literal("."))
+            return _alt(decimal_ast, integer_dot_ast)
 
         integer_upper = int(maximum_decimal.to_integral_value(rounding=ROUND_FLOOR))
         integer_ast = _range_from_bounds_ast(None, integer_upper)
@@ -629,7 +640,9 @@ def _float_range_from_bounds_ast(
             decimal_ast = _alt(bounded, _positive_strict_decimal_with_min_int_digits_ast(int_digits))
 
         if strict:
-            return decimal_ast
+            integer_lower = int(minimum_decimal.to_integral_value(rounding=ROUND_CEILING))
+            integer_dot_ast = _seq(_range_from_bounds_ast(integer_lower, None), Literal("."))
+            return _alt(decimal_ast, integer_dot_ast)
 
         integer_lower = int(minimum_decimal.to_integral_value(rounding=ROUND_CEILING))
         integer_ast = _range_from_bounds_ast(integer_lower, None)
@@ -638,6 +651,8 @@ def _float_range_from_bounds_ast(
 
     minimum_decimal = _to_decimal(minimum, "minimum")
     maximum_decimal = _to_decimal(maximum, "maximum")
+    if minimum_decimal > maximum_decimal:
+        return Empty()
     lower_decimal, upper_decimal = (
         (minimum_decimal, maximum_decimal)
         if minimum_decimal < maximum_decimal
