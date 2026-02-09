@@ -80,3 +80,12 @@ def test_range_upper_bounded(upper_bound, value):
 def test_range_no_bound(value):
     generated_regex = range_regex()
     assert re.compile(generated_regex).fullmatch(str(value)) is not None
+
+
+def test_single_digit_class_uses_shorthand():
+    assert range_regex(0, 9) == r"(?:\d)"
+
+
+def test_redundant_single_value_ranges_are_collapsed():
+    generated_regex = range_regex(169, 543)
+    assert re.search(r"\[([0-9])-\1\]", generated_regex) is None

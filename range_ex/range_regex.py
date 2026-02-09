@@ -1,8 +1,34 @@
-import re
 from typing import Optional
 
 
-def __compute_numerical_range(str_a, str_b, any_digit="[0-9]", start_appender_str=""):
+def __digit_range(start: int, end: int) -> str:
+    if start == end:
+        return str(start)
+    if start == 0 and end == 9:
+        return r"\d"
+    return f"[{start}-{end}]"
+
+
+def __tokenize_numeric_pattern(pattern: str) -> list[str]:
+    tokens = []
+    i = 0
+    while i < len(pattern):
+        if pattern[i] == "[":
+            end = pattern.find("]", i)
+            if end == -1:
+                raise ValueError(f"Malformed range expression: {pattern}")
+            tokens.append(pattern[i : end + 1])
+            i = end + 1
+        elif i + 1 < len(pattern) and pattern[i] == "\\" and pattern[i + 1] == "d":
+            tokens.append(r"\d")
+            i += 2
+        else:
+            tokens.append(pattern[i])
+            i += 1
+    return tokens
+
+
+def __compute_numerical_range(str_a, str_b, start_appender_str=""):
     """
     Helps generating regex for numerical range.
     Assumptions are int(str_a) <= int(str_b) and should have equal number of digits.
@@ -19,7 +45,7 @@ def __compute_numerical_range(str_a, str_b, any_digit="[0-9]", start_appender_st
     if str_a == str_b:
         return start_appender_str + str_a
     if str_len == 1:
-        return f"{start_appender_str}[{str_a}-{str_b}]"
+        return f"{start_appender_str}{__digit_range(int(str_a), int(str_b))}"
     # Counting index position till the characteres are equal
     check_equal = -1
     for i in range(str_len):
@@ -31,7 +57,6 @@ def __compute_numerical_range(str_a, str_b, any_digit="[0-9]", start_appender_st
         return __compute_numerical_range(
             str_a[check_equal + 1 :],
             str_b[check_equal + 1 :],
-            any_digit=any_digit,
             start_appender_str=start_appender_str + str_a[: check_equal + 1],
         )
 
@@ -41,7 +66,7 @@ def __compute_numerical_range(str_a, str_b, any_digit="[0-9]", start_appender_st
     patterns = []
     if intermediate_range:
         patterns.append(
-            f"{start_appender_str}[{intermediate_range[0]}-{intermediate_range[-1]}]{''.join([any_digit]*(str_len-1))}"
+            f"{start_appender_str}{__digit_range(intermediate_range[0], intermediate_range[-1])}{''.join([r'\d']*(str_len-1))}"
         )
     # patterns for the above part ['[2-4][0-9][0-9]']
 
@@ -49,14 +74,14 @@ def __compute_numerical_range(str_a, str_b, any_digit="[0-9]", start_appender_st
     for loop_counter in range(str_len - 1):  # no_of_digits-1 units
         if loop_counter == str_len - 2:  # Find the last loop
             patterns.append(
-                f"{start_appender_str}{str_a[:loop_counter+1]}[{str_a[-1]}-9]"
+                f"{start_appender_str}{str_a[:loop_counter+1]}{__digit_range(int(str_a[-1]), 9)}"
             )
         else:
             if (
                 str_a[loop_counter + 1] != "9"
             ):  # if 599 then avoid 10 in '[6-8]...|5[10-9]..|59[9-9].|598[9-9]'
                 patterns.append(
-                    f"{start_appender_str}{str_a[:loop_counter+1]}[{int(str_a[loop_counter+1])+1}-9]{''.join([any_digit]*(str_len-2-loop_counter))}"
+                    f"{start_appender_str}{str_a[:loop_counter+1]}{__digit_range(int(str_a[loop_counter+1]) + 1, 9)}{''.join([r'\d']*(str_len-2-loop_counter))}"
                 )
     # patterns for the above part ['1[7-9][0-9]','16[9-9]']
 
@@ -64,14 +89,14 @@ def __compute_numerical_range(str_a, str_b, any_digit="[0-9]", start_appender_st
     for loop_counter in range(str_len - 1):  # no_of_digits-1 units
         if loop_counter == str_len - 2:  # Find the last loop
             patterns.append(
-                f"{start_appender_str}{str_b[:loop_counter+1]}[0-{str_b[-1]}]"
+                f"{start_appender_str}{str_b[:loop_counter+1]}{__digit_range(0, int(str_b[-1]))}"
             )
         else:
             if (
                 str_b[loop_counter + 1] != "0"
             ):  # if 1102 then avoid -1 in '11[0--1].|110[0-2]'
                 patterns.append(
-                    f"{start_appender_str}{str_b[:loop_counter+1]}[0-{int(str_b[loop_counter+1])-1}]{''.join([any_digit]*(str_len-2-loop_counter))}"
+                    f"{start_appender_str}{str_b[:loop_counter+1]}{__digit_range(0, int(str_b[loop_counter+1]) - 1)}{''.join([r'\d']*(str_len-2-loop_counter))}"
                 )
     # patterns for the above part ['5[0-3][0-9]','54[0-3]']
 
@@ -169,9 +194,7 @@ def _range_regex(a, b):
         ranges = __range_splitter(a, b)
         intermediate_regex = "|".join(
             [
-                __compute_numerical_range(
-                    str(r[0]), str(r[1]), any_digit="[0-9]", start_appender_str=r[2]
-                )
+                __compute_numerical_range(str(r[0]), str(r[1]), start_appender_str=r[2])
                 for r in ranges
             ]
         )
@@ -179,19 +202,14 @@ def _range_regex(a, b):
         # Modifying the integer supported regex to support float
         new_regex = []
         for p in intermediate_regex.split("|"):
-            if p.find("[") == -1:
-                x = [c for c in p if c != "-"]
-            else:
-                x = [
-                    c for d in re.findall(r"-{0,1}(\d+)\[\d-\d\]*", p) for c in d
-                ] + re.findall(r"-{0,1}[\d]*(\[\d-\d\]*)", p)
+            x = __tokenize_numeric_pattern(p[1:] if p.startswith("-") else p)
 
             # If x = ['[0-9]'] and max_num_decimal = 2, We need x = ['0','[0-9]']
             if len(x) < max_num_decimal:
                 x = (["0"] * (max_num_decimal - len(x))) + x
 
             # Example x = ['3', '2', '[0-1]', '[0-9]'] for p=32[0-1][0-9]
-            start_appender_str = "-" if re.findall("^-", p) else ""
+            start_appender_str = "-" if p.startswith("-") else ""
             # Add a decimal point inbetween, keep the next digit mandatory and others optional (32.[0-1][0-9]?[0-9]*)
             fractional_part = (
                 [x[-max_num_decimal]] + [z + "?" for z in x[-max_num_decimal + 1 :]]
@@ -202,7 +220,7 @@ def _range_regex(a, b):
                 "".join(x[:-max_num_decimal]) if "".join(x[:-max_num_decimal]) else "0?"
             )
             new_regex.append(
-                rf"{start_appender_str}{non_fractional_part}\.{''.join(fractional_part)}[0-9]*"
+                rf"{start_appender_str}{non_fractional_part}\.{''.join(fractional_part)}\d*"
             )
         regex = f"(?:{'|'.join(new_regex)})"
         return regex
@@ -211,7 +229,7 @@ def _range_regex(a, b):
     elif isinstance(a, (int)) and isinstance(b, (int)):
         a, b = (a, b) if a < b else (b, a)
         ranges = __range_splitter(a, b)
-        regex = f"(?:{'|'.join([__compute_numerical_range(str(r[0]),str(r[1]),any_digit='[0-9]',start_appender_str=r[2]) for r in ranges])})"
+        regex = f"(?:{'|'.join([__compute_numerical_range(str(r[0]),str(r[1]),start_appender_str=r[2]) for r in ranges])})"
         return regex
 
     # Neither integer nor float
@@ -234,7 +252,7 @@ def range_regex(minimum: Optional[int] = None, maximum: Optional[int] = None):
     If you omit both, all numbers will be matched.
     """
     if minimum is None and maximum is None:
-        return r"-?(?:[1-9][0-9]*|0)"
+        return r"-?(?:[1-9]\d*|0)"
     if minimum is None:
         if maximum == 0:
             return r"(?:-[1-9]\d*|0)"
