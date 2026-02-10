@@ -1,4 +1,4 @@
-Range-Ex
+range-ex
 =======
 [![Tests & QA](https://github.com/nielstron/range-ex/actions/workflows/tests.yml/badge.svg)](https://github.com/nielstron/range-ex/actions/workflows/tests.yml)
 [![Coverage Status](https://coveralls.io/repos/github/nielstron/range-ex/badge.svg?branch=master)](https://coveralls.io/github/nielstron/range-ex?branch=master)
