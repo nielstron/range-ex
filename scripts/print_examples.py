@@ -1,4 +1,9 @@
+from functools import partial
+
 from range_ex import float_range_regex, range_regex
+
+range_regex = partial(range_regex, capturing=True)
+float_range_regex = partial(float_range_regex, capturing=True)
 
 
 def build_examples() -> list[tuple[str, str]]:
@@ -27,8 +32,8 @@ def build_examples() -> list[tuple[str, str]]:
         ),
         ("float_range_regex(strict=True)", float_range_regex(strict=True)),
         (
-            "range_regex(-65, 12, capturing=True)",
-            range_regex(-65, 12, capturing=True),
+            "range_regex(-65, 12)",
+            range_regex(-65, 12),
         ),
     ]
 
