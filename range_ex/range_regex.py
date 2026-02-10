@@ -38,6 +38,9 @@ class Node(ABC):
     def as_options(self) -> list["Node"]:
         return [self]
 
+    def as_repeated(self) -> "Node":
+        return self
+
     @property
     def min_repeats(self) -> int:
         return 1
@@ -103,9 +106,15 @@ class FixedRepetition(Node):
         if self._max_repeats is not None and self._max_repeats < self._min_repeats:
             raise ValueError("max_repeats must be >= min_repeats")
 
+    def as_repeated(self) -> Node:
+        return self.node
+
     def render(self, capturing: bool = False) -> str:
         inner = self.node.render(capturing=capturing)
-        if isinstance(self.node, (Either, Sequence, FixedRepetition)):
+        if (
+            isinstance(self.node, (Either, Sequence))
+            or self.node.as_repeated() is not self.node
+        ):
             inner = _parenthesise(inner, capture=capturing)
         if self.min_repeats == 0 and self.max_repeats == 0:
             return ""
@@ -134,21 +143,22 @@ class FixedRepetition(Node):
         if isinstance(self.node, Empty) and self.min_repeats > 0:
             return Empty()
         normalized_child = self.node.normalize()
+        child_base = normalized_child.as_repeated()
         # (a+)? === a* and (a*)? === a*
         if (
-            isinstance(normalized_child, FixedRepetition)
+            child_base is not normalized_child
             and self.min_repeats == 0
             and self.max_repeats == 1
             and normalized_child.max_repeats is None
             and normalized_child.min_repeats in (0, 1)
         ):
-            return FixedRepetition(normalized_child.node, 0, None)
+            return FixedRepetition(child_base, 0, None)
         if self.min_repeats == 1 and self.max_repeats == 1:
             return normalized_child
         # We can fold fixed repetitions of fixed m iff the child is of the form a{n,} or a{n}
         # In those cases a{n,}{m} === a{n*m,} and a{n}{m} === a{n*m}
         if (
-            isinstance(normalized_child, FixedRepetition)
+            child_base is not normalized_child
             and self.min_repeats
             == self.max_repeats  # implies self.max_repeats is not None
             and (
@@ -158,7 +168,7 @@ class FixedRepetition(Node):
         ):
             multiplier = self.min_repeats
             return FixedRepetition(
-                normalized_child.node,
+                child_base,
                 normalized_child.min_repeats * multiplier,
                 normalized_child.max_repeats * multiplier
                 if normalized_child.max_repeats is not None
@@ -190,10 +200,10 @@ class Sequence(Node):
                 continue
             # Merge two adjacent fixed repetitions of the same node.
             # a{n,m}a{k,l} === a{n+k,m+l}
-            if (prev.node if isinstance(prev, FixedRepetition) else prev) == (
-                part.node if isinstance(part, FixedRepetition) else part
-            ):
-                node = prev.node if isinstance(prev, FixedRepetition) else prev
+            prev_base = prev.as_repeated()
+            part_base = part.as_repeated()
+            if prev_base == part_base:
+                node = prev_base
                 max_repeats = (
                     None
                     if prev.max_repeats is None or part.max_repeats is None
@@ -244,7 +254,7 @@ class Either(Node):
         repetition_group_order: list[Node] = []
 
         for option in flattened_options:
-            base_node = option.node if isinstance(option, FixedRepetition) else option
+            base_node = option.as_repeated()
             if base_node not in repetition_groups:
                 repetition_groups[base_node] = []
                 repetition_group_order.append(base_node)
