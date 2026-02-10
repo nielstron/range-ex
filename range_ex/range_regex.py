@@ -4,7 +4,7 @@ import operator
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
+from decimal import Decimal
 from math import floor, ceil
 from typing import Optional, Union
 
@@ -16,7 +16,9 @@ def _parenthesise(s: str, capture: bool = False) -> str:
     return f"{open}{s})"
 
 
-def _to_decimal(value: DecimalLike) -> Decimal:
+def _to_decimal(value: DecimalLike | None) -> Decimal | None:
+    if value is None:
+        return None
     if isinstance(value, Decimal):
         return value
     if isinstance(value, float):
@@ -542,10 +544,11 @@ def _fractional_interval_ast(
     return _one_of(*patterns)
 
 
-def _float_range_ast_within_one(a: Decimal, b: Decimal) -> Node:
+def _float_range_ast_within_one(a: DecimalLike, b: DecimalLike) -> Node:
     """
     Generate a regex AST that matches any number [a, b], where floor(a) <= a < b <= ceil(a)
     """
+    a, b = _to_decimal(a), _to_decimal(b)
     pre_decs = floor(a) if a > 0 else ceil(a)
     pre_decs_node = Literal(str(abs(pre_decs)) if pre_decs < 0 else str(pre_decs))
 
@@ -599,49 +602,56 @@ def _float_range_ast_within_one(a: Decimal, b: Decimal) -> Node:
     return _seq(*sign, pre_decs_node, Literal("."), decimal_ast)
 
 
-def _float_range_ast(a: DecimalLike, b: DecimalLike, strict=False) -> Node:
+def _float_range_ast(a: DecimalLike, b: DecimalLike) -> Node:
     """
-    Generate a regex AST that matches decimal numbers in the inclusive range [a, b].
+    Generate a regex AST that matches decimal numbers (and only decimal numbers, e.g. nonzero decimals) in the inclusive range [a, b].
     """
+    # Parse incoming bounds once so all comparisons and bucket splits are exact.
     a_decimal = _to_decimal(a)
     b_decimal = _to_decimal(b)
     if b_decimal < a_decimal:
         return Empty()
 
-    # Handle negative ranges by mirroring to positive magnitudes.
+    # Entirely negative interval: mirror to positive magnitudes [|b|, |a|]
+    # and prepend '-'. This lets the core logic stay non-negative.
     if b_decimal < 0:
         return _seq(
             Literal("-"),
-            _float_range_ast(abs(b_decimal), abs(a_decimal), strict=strict),
+            _float_range_ast(abs(b_decimal), abs(a_decimal)),
         )
+    # Interval crossing zero: split into negative and non-negative subranges.
     if a_decimal < 0 <= b_decimal:
         patterns: list[Node] = []
         patterns.append(
             _seq(
                 Literal("-"),
-                _float_range_ast(Decimal("0"), abs(a_decimal), strict=strict),
+                _float_range_ast(0, abs(a_decimal)),
             )
         )
-        patterns.append(_float_range_ast(Decimal("0"), b_decimal, strict=strict))
+        patterns.append(_float_range_ast(0, b_decimal))
         return _one_of(*patterns)
 
+    # Non-negative interval: split by integer buckets to avoid leaking across
+    # decimal boundaries.
     start_bucket = floor(a_decimal)
     end_bucket = floor(b_decimal)
+    # Same integer bucket means one local within-one builder is sufficient.
     if start_bucket == end_bucket:
         return _float_range_ast_within_one(a_decimal, b_decimal)
 
     patterns: list[Node] = []
-    patterns.append(_float_range_ast_within_one(a_decimal, Decimal(start_bucket + 1)))
+    # Head bucket: from exact lower bound up to the next integer boundary.
+    patterns.append(_float_range_ast_within_one(a_decimal, start_bucket + 1))
 
+    # Middle full buckets: any decimal tail is allowed.
     middle_min = start_bucket + 1
     middle_max = end_bucket - 1
     if middle_min <= middle_max:
         decimals = _seq(Literal("."), _any_digits(None))
-        if not strict:
-            decimals = optional(decimals)
         patterns.append(_seq(_range_from_bounds_ast(middle_min, middle_max), decimals))
 
-    patterns.append(_float_range_ast_within_one(Decimal(end_bucket), b_decimal))
+    # Tail bucket: from final integer boundary down to exact upper bound.
+    patterns.append(_float_range_ast_within_one(end_bucket, b_decimal))
     return _one_of(*patterns)
 
 
@@ -718,6 +728,10 @@ def _negative_strict_decimal_with_min_int_digits_ast(extra_digits: int) -> Node:
     )
 
 
+def _negative_strict_decimal_ast() -> Node:
+    return _negative_strict_decimal_with_min_int_digits_ast(0)
+
+
 def _positive_strict_decimal_with_min_int_digits_ast(extra_digits: int) -> Node:
     if extra_digits < 0:
         raise ValueError("extra_digits must be >= 0")
@@ -754,41 +768,46 @@ def _positive_strict_decimal_with_min_int_digits_ast(extra_digits: int) -> Node:
     )
 
 
-def _range_from_bounds_ast(minimum: Optional[int], maximum: Optional[int]) -> Node:
-    if minimum is not None:
-        minimum = operator.index(minimum)
-    if maximum is not None:
-        maximum = operator.index(maximum)
-    if minimum is not None and maximum is not None and minimum > maximum:
-        return Empty()
+def _positive_strict_decimal_ast() -> Node:
+    return _positive_strict_decimal_with_min_int_digits_ast(0)
 
+
+def _range_from_bounds_ast(minimum: Optional[int], maximum: Optional[int]) -> Node:
+    # convert input to integers if not None
+    minimum = operator.index(minimum) if minimum is not None else minimum
+    maximum = operator.index(maximum) if maximum is not None else maximum
+
+    # Range is unbounded
     if minimum is None and maximum is None:
         return _integer_unbounded_ast()
+
+    # Range is bounded in both directions
+    if minimum is not None and maximum is not None:
+        return _range_ast(minimum, maximum)
+
+    # Range is unbounded in negative direction. We can express this as a union of a bounded range and an unbounded range in the other direction, e.g. (-inf, 256] === (-inf, 0] U [0, 256]
+    patterns: list[Node] = []
     if minimum is None:
-        assert maximum is not None
-        if maximum == 0:
-            return _one_of(_negative_unbounded_ast(), Literal("0"))
-        if maximum > 0:
-            upperbound_ast = _range_ast(0, maximum)
-            return _one_of(_negative_unbounded_ast(), upperbound_ast)
-
-        num_digits = len(str(maximum)) - 1
-        lower_bound = -int("".join(["9"] * num_digits))
-        range_ast = _range_ast(lower_bound, maximum)
-        return _one_of(range_ast, _negative_with_min_digits_ast(num_digits))
-    if maximum is None:
-        assert minimum is not None
-        if minimum < 0:
-            lowerbound_ast = _range_ast(minimum, 0)
-            return _one_of(lowerbound_ast, _positive_unbounded_ast())
-
-        num_digits = len(str(minimum))
-        upperbound = int("".join(["9"] * num_digits))
-        lowerbound_ast = _range_ast(minimum, upperbound)
-        return _one_of(lowerbound_ast, _positive_with_min_digits_ast(num_digits))
-
-    assert minimum is not None and maximum is not None
-    return _range_ast(minimum, maximum)
+        if maximum >= 0:
+            patterns.append(_negative_unbounded_ast())
+            patterns.append(_range_ast(0, maximum))
+        else:
+            # We split for example (-inf, -15] into (-inf, -100] U [-99, -15].
+            digits = len(str(abs(maximum)))
+            lower_bound = -(10**digits) + 1
+            patterns.append(_range_ast(lower_bound, maximum))
+            patterns.append(_negative_with_min_digits_ast(digits))
+    # Range is unbounded in positive direction. Similar to the above case, we can express this as a union of a bounded range and an unbounded range in the other direction, e.g. [-15, inf) === [-15, 0] U [0, inf)
+    elif minimum <= 0:
+        patterns.append(_range_ast(minimum, 0))
+        patterns.append(_positive_unbounded_ast())
+    else:
+        # We split for example [15, inf) into [15, 99] U [100, inf).
+        digits = len(str(minimum))
+        upper_bound = (10**digits) - 1
+        patterns.append(_range_ast(minimum, upper_bound))
+        patterns.append(_positive_with_min_digits_ast(digits))
+    return _one_of(*patterns)
 
 
 def _float_range_from_bounds_ast(
@@ -796,90 +815,76 @@ def _float_range_from_bounds_ast(
     maximum: Optional[DecimalLike],
     strict: bool,
 ) -> Node:
-    if minimum is None and maximum is None:
-        decimal_ast = _strict_decimal_unbounded_ast()
-        negative_zero_ast = _negative_zero_ast(strict)
-        if strict:
-            return _one_of(decimal_ast, negative_zero_ast)
-        return _one_of(_integer_unbounded_ast(), decimal_ast, negative_zero_ast)
-
-    if minimum is None:
-        assert maximum is not None
-        maximum_decimal = _to_decimal(maximum)
-        if maximum_decimal >= 0:
-            bounded = _float_range_ast(Decimal("0.0"), maximum_decimal, strict=strict)
-            decimal_ast = _one_of(
-                _negative_strict_decimal_with_min_int_digits_ast(0), bounded
-            )
-        else:
-            int_digits = len(str(int(floor(abs(maximum_decimal)))))
-            lower = -(Decimal(10) ** int_digits)
-            bounded = _float_range_ast(lower, maximum_decimal, strict)
-            decimal_ast = _one_of(
-                bounded, _negative_strict_decimal_with_min_int_digits_ast(int_digits)
-            )
-
-        integer_upper = int(floor(maximum_decimal))
-        integer_ast = _range_from_bounds_ast(None, integer_upper)
-        integer_dot_ast = _seq(integer_ast, Literal("."))
-        include_negative_zero = maximum_decimal >= 0
-        negative_zero_ast = (
-            _negative_zero_ast(strict) if include_negative_zero else None
-        )
-        if strict:
-            if negative_zero_ast is None:
-                return _one_of(decimal_ast, integer_dot_ast)
-            return _one_of(decimal_ast, integer_dot_ast, negative_zero_ast)
-        if negative_zero_ast is None:
-            return _one_of(integer_ast, integer_dot_ast, decimal_ast)
-        return _one_of(integer_ast, integer_dot_ast, decimal_ast, negative_zero_ast)
-
-    if maximum is None:
-        minimum_decimal = _to_decimal(minimum)
-        if minimum_decimal <= 0:
-            bounded = _float_range_ast(minimum_decimal, Decimal("0.0"), strict=strict)
-            decimal_ast = _one_of(
-                bounded, _positive_strict_decimal_with_min_int_digits_ast(0)
-            )
-        else:
-            int_digits = len(
-                str(int(minimum_decimal.to_integral_value(rounding=ROUND_FLOOR)))
-            )
-            upper = Decimal(10) ** int_digits
-            bounded = _float_range_ast(minimum_decimal, upper, strict=strict)
-            decimal_ast = _one_of(
-                bounded, _positive_strict_decimal_with_min_int_digits_ast(int_digits)
-            )
-
-        integer_lower = int(minimum_decimal.to_integral_value(rounding=ROUND_CEILING))
-        integer_ast = _range_from_bounds_ast(integer_lower, None)
-        integer_dot_ast = _seq(integer_ast, Literal("."))
-        include_negative_zero = minimum_decimal <= 0
-        negative_zero_ast = (
-            _negative_zero_ast(strict) if include_negative_zero else None
-        )
-        if strict:
-            if negative_zero_ast is None:
-                return _one_of(decimal_ast, integer_dot_ast)
-            return _one_of(decimal_ast, integer_dot_ast, negative_zero_ast)
-        if negative_zero_ast is None:
-            return _one_of(integer_ast, integer_dot_ast, decimal_ast)
-        return _one_of(integer_ast, integer_dot_ast, decimal_ast, negative_zero_ast)
-
     minimum_decimal = _to_decimal(minimum)
     maximum_decimal = _to_decimal(maximum)
-    decimal_ast = _float_range_ast(minimum_decimal, maximum_decimal, strict=strict)
-    integer_ast = _range_ast(ceil(minimum_decimal), floor(maximum_decimal))
-    integer_dot_ast = _seq(integer_ast, Literal("."))
-    include_negative_zero = minimum_decimal <= 0 <= maximum_decimal
-    negative_zero_ast = _negative_zero_ast(strict) if include_negative_zero else None
+    # Range is invalid (empty) if minimum > maximum.
+    if (
+        minimum_decimal is not None
+        and maximum_decimal is not None
+        and minimum_decimal > maximum_decimal
+    ):
+        return Empty()
+
+    patterns: list[Node] = []
+    decimal_patterns: list[Node] = []
+
+    # Range is unbounded in both directions
+    if minimum_decimal is None and maximum_decimal is None:
+        decimal_patterns.append(_strict_decimal_unbounded_ast())
+    elif minimum_decimal is None:
+        # Range is unbounded in negative direction.
+        if maximum_decimal >= 0:
+            # We split for example (-inf, 15.2] into (-inf, 0] U [0, 15.2]
+            decimal_patterns.append(_negative_strict_decimal_ast())
+            decimal_patterns.append(_float_range_ast(0, maximum_decimal))
+        else:
+            # We split for example (-inf, -15.2] into (-inf, -100] U [-100, -15.2]
+            int_digits = len(str(int(floor(abs(maximum_decimal)))))
+            lower = -(Decimal(10) ** int_digits)
+            decimal_patterns.append(_float_range_ast(lower, maximum_decimal))
+            decimal_patterns.append(
+                _negative_strict_decimal_with_min_int_digits_ast(int_digits)
+            )
+    elif maximum_decimal is None:
+        # Range is unbounded in positive direction.
+        if minimum_decimal <= 0:
+            # We split for example [-15.2, inf) into [-15.2, 0] U [0, inf)
+            decimal_patterns.append(_float_range_ast(minimum_decimal, 0))
+            decimal_patterns.append(_positive_strict_decimal_ast())
+        else:
+            # We split for example [15.2, inf) into [15.2, 100] U [100, inf).
+            int_digits = len(str(int(floor(minimum_decimal))))
+            upper = Decimal(10) ** int_digits
+            decimal_patterns.append(_float_range_ast(minimum_decimal, upper))
+            decimal_patterns.append(
+                _positive_strict_decimal_with_min_int_digits_ast(int_digits)
+            )
+    else:
+        # Range is bounded in both directions.
+        decimal_patterns.append(_float_range_ast(minimum_decimal, maximum_decimal))
+
+    patterns.extend(decimal_patterns)
+
+    # Determine integer values inside the range. This is only for forms n and n. (not n.xxx), which are not covered by the float_range_ast
+    # For example, if the range is [12.5, 345.6], we want to include integers 13 through 345.
+    int_min = None if minimum_decimal is None else int(ceil(minimum_decimal))
+    int_max = None if maximum_decimal is None else int(floor(maximum_decimal))
+    integer_ast = _range_from_bounds_ast(int_min, int_max)
+    # If strict is True, we only allow integers if they are explicitly written with a decimal point (e.g. "1." or "1.0" but not "1"). If strict is False, we allow both forms for integers in range.
     if strict:
-        if negative_zero_ast is None:
-            return _one_of(decimal_ast, integer_dot_ast)
-        return _one_of(decimal_ast, integer_dot_ast, negative_zero_ast)
-    if negative_zero_ast is None:
-        return _one_of(integer_ast, integer_dot_ast, decimal_ast)
-    return _one_of(integer_ast, integer_dot_ast, decimal_ast, negative_zero_ast)
+        integer_dot_ast = _seq(integer_ast, Literal("."))
+    else:
+        integer_dot_ast = _seq(integer_ast, optional(Literal(".")))
+    patterns.append(integer_dot_ast)
+
+    # If the range includes zero, we need to explicitly include negative zero
+    includes_zero = (minimum_decimal is None or minimum_decimal <= 0) and (
+        maximum_decimal is None or maximum_decimal >= 0
+    )
+    if includes_zero:
+        patterns.append(_negative_zero_ast(strict))
+
+    return _one_of(*patterns)
 
 
 def range_regex(
