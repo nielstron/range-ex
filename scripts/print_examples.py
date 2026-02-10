@@ -27,6 +27,10 @@ def build_examples() -> list[tuple[str, str]]:
             float_range_regex(maximum="1.5", strict=True),
         ),
         (
+            "float_range_regex(-.1, '1.5', strict=True)",
+            float_range_regex(maximum="1.5", strict=True),
+        ),
+        (
             "float_range_regex(minimum='1.5', strict=False)",
             float_range_regex(minimum="1.5", strict=False),
         ),

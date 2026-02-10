@@ -129,6 +129,15 @@ class FixedRepetition(Node):
         if (isinstance(self.node, Empty) and self.min_repeats > 0):
             return Empty()
         normalized_child = self.node.normalize()
+        # (a+)? === a* and (a*)? === a*
+        if (
+            isinstance(normalized_child, FixedRepetition)
+            and self.min_repeats == 0
+            and self.max_repeats == 1
+            and normalized_child.max_repeats is None
+            and normalized_child.min_repeats in (0, 1)
+        ):
+            return FixedRepetition(normalized_child.node, 0, None)
         if self.min_repeats == 1 and self.max_repeats == 1:
             return normalized_child
         # We can fold fixed repetitions of fixed m iff the child is of the form a{n,} or a{n}
@@ -218,17 +227,56 @@ class Either(Node):
                 if opt not in seen:
                     seen.add(opt)
                     flattened_options.append(opt)
-        # if any two options are fixed repetitions of the same node, we can merge them into one option with a wider repetition range. This is similar to the merging logic in Sequence.normalize, but here we don't require the repetitions to be adjacent.
-        for option in flattened_options:
-            if isinstance(option, FixedRepetition):
-                for other_option in flattened_options:
-                    if option is other_option or not isinstance(other_option, FixedRepetition):
-                        continue
-                    if option.node == other_option.node:
-                        # merging is only possible if min/max repeat are overlapping or adjacent, e.g. a{2,4} and a{3,5} can be merged into a{2,5}, but a{2,3} and a{5,6} cannot be merged.
+        # Merge alternatives by unioning overlapping/adjacent repeat intervals for
+        # the same base node. Plain nodes are treated as {1,1}.
+        repetition_groups: dict[Node, list[tuple[int, Optional[int]]]] = {}
+        repetition_group_order: list[Node] = []
 
-                        # !TODO
-        return Either(tuple(flattened_options))
+        for option in flattened_options:
+            base_node = option.node if isinstance(option, FixedRepetition) else option
+            if base_node not in repetition_groups:
+                repetition_groups[base_node] = []
+                repetition_group_order.append(base_node)
+            repetition_groups[base_node].append((option.min_repeats, option.max_repeats))
+
+        merged_repetition_options: list[Node] = []
+        for base_node in repetition_group_order:
+            reps = repetition_groups[base_node]
+            intervals = sorted(
+                reps,
+                key=lambda interval: interval[0],
+            )
+            merged: list[tuple[int, Optional[int]]] = []
+            for interval_min, interval_max in intervals:
+                if not merged:
+                    merged.append((interval_min, interval_max))
+                    continue
+
+                prev_min, prev_max = merged[-1]
+                can_merge = (
+                    prev_max is None
+                    or interval_min <= prev_max + 1
+                )
+                if can_merge:
+                    if prev_max is None or interval_max is None:
+                        merged[-1] = (prev_min, None)
+                    else:
+                        merged[-1] = (prev_min, max(prev_max, interval_max))
+                else:
+                    merged.append((interval_min, interval_max))
+
+            for interval_min, interval_max in merged:
+                if interval_min == 1 and interval_max == 1:
+                    merged_repetition_options.append(base_node)
+                else:
+                    merged_repetition_options.append(
+                        FixedRepetition(base_node, interval_min, interval_max)
+                    )
+
+        result_options = merged_repetition_options
+        if len(result_options) == 1:
+            return result_options[0]
+        return Either(tuple(result_options))
 
     def as_options(self):
         return list(self.options)

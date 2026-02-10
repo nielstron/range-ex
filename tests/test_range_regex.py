@@ -6,8 +6,9 @@ from hypothesis.strategies import one_of
 import pytest
 
 from range_ex import float_range_regex, range_regex
+from range_ex.range_regex import DigitRange, Either, FixedRepetition, Literal
 
-NUM_EXAMPLES = 1000
+NUM_EXAMPLES = 2000
 
 
 @st.composite
@@ -302,3 +303,68 @@ def test_float_range_with_reversed_bounds_is_empty():
     compiled = re.compile(float_range_regex(1.5, 1.0))
     assert compiled.fullmatch("1.0") is None
     assert compiled.fullmatch("1.5") is None
+
+
+def test_either_normalize_merges_overlapping_fixed_repetitions():
+    ast = Either(
+        (
+            FixedRepetition(Literal("a"), 2, 4),
+            FixedRepetition(Literal("a"), 3, 5),
+        )
+    )
+    normalized = ast.normalize()
+    assert normalized == FixedRepetition(Literal("a"), 2, 5)
+
+
+def test_either_normalize_merges_adjacent_fixed_repetitions():
+    ast = Either(
+        (
+            FixedRepetition(Literal("a"), 2, 3),
+            FixedRepetition(Literal("a"), 4, 6),
+        )
+    )
+    normalized = ast.normalize()
+    assert normalized == FixedRepetition(Literal("a"), 2, 6)
+
+
+def test_either_normalize_keeps_disjoint_fixed_repetitions_separate():
+    ast = Either(
+        (
+            FixedRepetition(Literal("a"), 2, 3),
+            FixedRepetition(Literal("a"), 5, 6),
+        )
+    )
+    normalized = ast.normalize()
+    assert isinstance(normalized, Either)
+    assert set(normalized.options) == {
+        FixedRepetition(Literal("a"), 2, 3),
+        FixedRepetition(Literal("a"), 5, 6),
+    }
+
+
+def test_either_normalize_merges_unbounded_fixed_repetition():
+    ast = Either(
+        (
+            FixedRepetition(Literal("a"), 2, 4),
+            FixedRepetition(Literal("a"), 5, None),
+        )
+    )
+    normalized = ast.normalize()
+    assert normalized == FixedRepetition(Literal("a"), 2, None)
+
+
+def test_either_normalize_merges_singleton_with_fixed_repetition():
+    ast = Either(
+        (
+            DigitRange(0, 9),
+            FixedRepetition(DigitRange(0, 9), 1, None),
+        )
+    )
+    normalized = ast.normalize()
+    assert normalized == FixedRepetition(DigitRange(0, 9), 1, None)
+
+
+def test_fixed_repetition_optional_of_plus_normalizes_to_star():
+    ast = FixedRepetition(FixedRepetition(Literal("x"), 1, None), 0, 1)
+    normalized = ast.normalize()
+    assert normalized == FixedRepetition(Literal("x"), 0, None)
