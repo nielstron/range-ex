@@ -378,3 +378,23 @@ def test_fixed_repetition_optional_of_plus_normalizes_to_star():
     ast = FixedRepetition(FixedRepetition(Literal("x"), 1, None), 0, 1)
     normalized = ast.normalize()
     assert normalized == FixedRepetition(Literal("x"), 0, None)
+
+
+def test_float_range_zero_inclusive_strict_accepts_negative_zero_forms():
+    compiled = re.compile(float_range_regex(-0.1, "1.5", strict=True))
+    assert compiled.fullmatch("-0.") is not None
+    assert compiled.fullmatch("-0.0") is not None
+    assert compiled.fullmatch("-.0") is not None
+    assert compiled.fullmatch("-.00") is not None
+
+
+def test_float_range_zero_inclusive_non_strict_accepts_negative_zero_integer():
+    compiled = re.compile(float_range_regex(minimum=-0.037, maximum=1.6, strict=False))
+    assert compiled.fullmatch("-0") is not None
+
+
+def test_float_range_positive_only_rejects_negative_zero_forms():
+    compiled = re.compile(float_range_regex(0.1, 1.5, strict=True))
+    assert compiled.fullmatch("-0.") is None
+    assert compiled.fullmatch("-0.0") is None
+    assert compiled.fullmatch("-.0") is None

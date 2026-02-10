@@ -700,6 +700,18 @@ def _strict_decimal_unbounded_ast() -> Node:
     )
 
 
+def _negative_zero_ast(strict: bool) -> Node:
+    zero_tail = FixedRepetition(Literal("0"), 1, None)
+    strict_forms = _one_of(
+        _seq(Literal("-"), Literal("0"), Literal(".")),
+        _seq(Literal("-"), Literal("0"), Literal("."), zero_tail),
+        _seq(Literal("-"), Literal("."), zero_tail),
+    )
+    if strict:
+        return strict_forms
+    return _one_of(Literal("-0"), strict_forms)
+
+
 def _negative_strict_decimal_with_min_int_digits_ast(extra_digits: int) -> Node:
     return _seq(
         Literal("-"), _positive_strict_decimal_with_min_int_digits_ast(extra_digits)
@@ -786,9 +798,10 @@ def _float_range_from_bounds_ast(
 ) -> Node:
     if minimum is None and maximum is None:
         decimal_ast = _strict_decimal_unbounded_ast()
+        negative_zero_ast = _negative_zero_ast(strict)
         if strict:
-            return decimal_ast
-        return _one_of(_integer_unbounded_ast(), decimal_ast)
+            return _one_of(decimal_ast, negative_zero_ast)
+        return _one_of(_integer_unbounded_ast(), decimal_ast, negative_zero_ast)
 
     if minimum is None:
         assert maximum is not None
@@ -809,9 +822,17 @@ def _float_range_from_bounds_ast(
         integer_upper = int(floor(maximum_decimal))
         integer_ast = _range_from_bounds_ast(None, integer_upper)
         integer_dot_ast = _seq(integer_ast, Literal("."))
+        include_negative_zero = maximum_decimal >= 0
+        negative_zero_ast = (
+            _negative_zero_ast(strict) if include_negative_zero else None
+        )
         if strict:
-            return _one_of(decimal_ast, integer_dot_ast)
-        return _one_of(integer_ast, integer_dot_ast, decimal_ast)
+            if negative_zero_ast is None:
+                return _one_of(decimal_ast, integer_dot_ast)
+            return _one_of(decimal_ast, integer_dot_ast, negative_zero_ast)
+        if negative_zero_ast is None:
+            return _one_of(integer_ast, integer_dot_ast, decimal_ast)
+        return _one_of(integer_ast, integer_dot_ast, decimal_ast, negative_zero_ast)
 
     if maximum is None:
         minimum_decimal = _to_decimal(minimum)
@@ -833,18 +854,32 @@ def _float_range_from_bounds_ast(
         integer_lower = int(minimum_decimal.to_integral_value(rounding=ROUND_CEILING))
         integer_ast = _range_from_bounds_ast(integer_lower, None)
         integer_dot_ast = _seq(integer_ast, Literal("."))
+        include_negative_zero = minimum_decimal <= 0
+        negative_zero_ast = (
+            _negative_zero_ast(strict) if include_negative_zero else None
+        )
         if strict:
-            return _one_of(decimal_ast, integer_dot_ast)
-        return _one_of(integer_ast, integer_dot_ast, decimal_ast)
+            if negative_zero_ast is None:
+                return _one_of(decimal_ast, integer_dot_ast)
+            return _one_of(decimal_ast, integer_dot_ast, negative_zero_ast)
+        if negative_zero_ast is None:
+            return _one_of(integer_ast, integer_dot_ast, decimal_ast)
+        return _one_of(integer_ast, integer_dot_ast, decimal_ast, negative_zero_ast)
 
     minimum_decimal = _to_decimal(minimum)
     maximum_decimal = _to_decimal(maximum)
     decimal_ast = _float_range_ast(minimum_decimal, maximum_decimal, strict=strict)
     integer_ast = _range_ast(ceil(minimum_decimal), floor(maximum_decimal))
     integer_dot_ast = _seq(integer_ast, Literal("."))
+    include_negative_zero = minimum_decimal <= 0 <= maximum_decimal
+    negative_zero_ast = _negative_zero_ast(strict) if include_negative_zero else None
     if strict:
-        return _one_of(decimal_ast, integer_dot_ast)
-    return _one_of(integer_ast, integer_dot_ast, decimal_ast)
+        if negative_zero_ast is None:
+            return _one_of(decimal_ast, integer_dot_ast)
+        return _one_of(decimal_ast, integer_dot_ast, negative_zero_ast)
+    if negative_zero_ast is None:
+        return _one_of(integer_ast, integer_dot_ast, decimal_ast)
+    return _one_of(integer_ast, integer_dot_ast, decimal_ast, negative_zero_ast)
 
 
 def range_regex(
