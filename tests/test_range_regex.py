@@ -49,16 +49,24 @@ def float_ranges_and_values(draw):
 
 @st.composite
 def optional_float_bounds_and_integer(draw):
-    minimum_tenths = draw(st.one_of(st.none(), st.integers(min_value=-1000, max_value=1000)))
-    maximum_tenths = draw(st.one_of(st.none(), st.integers(min_value=-1000, max_value=1000)))
+    minimum_tenths = draw(
+        st.one_of(st.none(), st.integers(min_value=-1000, max_value=1000))
+    )
+    maximum_tenths = draw(
+        st.one_of(st.none(), st.integers(min_value=-1000, max_value=1000))
+    )
     integer_value = draw(st.integers(min_value=-2000, max_value=2000))
     return minimum_tenths, maximum_tenths, integer_value
 
 
 @st.composite
 def optional_float_bounds_and_dot_leading_fraction(draw):
-    minimum_tenths = draw(st.one_of(st.none(), st.integers(min_value=-1000, max_value=1000)))
-    maximum_tenths = draw(st.one_of(st.none(), st.integers(min_value=-1000, max_value=1000)))
+    minimum_tenths = draw(
+        st.one_of(st.none(), st.integers(min_value=-1000, max_value=1000))
+    )
+    maximum_tenths = draw(
+        st.one_of(st.none(), st.integers(min_value=-1000, max_value=1000))
+    )
     digit = draw(st.integers(min_value=1, max_value=9))
     negative = draw(st.booleans())
     text = f"-.{digit}" if negative else f".{digit}"
@@ -290,9 +298,11 @@ def test_float_range_rejects_values_above_upper_bound_with_extra_digits_from_int
     compiled = re.compile(float_range_regex(1, 1.5))
     assert compiled.fullmatch("1.51") is None
 
+
 def test_pos_float_range_accepts_dot():
     compiled = re.compile(float_range_regex(0.1, 1.5))
     assert compiled.fullmatch(".51") is not None
+
 
 def test_float_range_rejects_non_parseable_string_bounds():
     with pytest.raises(InvalidOperation):
