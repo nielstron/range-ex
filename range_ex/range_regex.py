@@ -548,10 +548,14 @@ def _float_range_ast_within_one(a: DecimalLike, b: DecimalLike) -> Node:
     """
     Generate a regex AST that matches any number [a, b], where floor(a) <= a < b <= ceil(a)
     """
+    # Normalize to Decimal once so all arithmetic is exact.
     a, b = _to_decimal(a), _to_decimal(b)
+    # Integer part is fixed inside a single "within-one" bucket.
     pre_decs = floor(a) if a > 0 else ceil(a)
     pre_decs_node = Literal(str(abs(pre_decs)) if pre_decs < 0 else str(pre_decs))
 
+    # Special handling for the negative-zero bucket [-x, 0]:
+    # produce '-.d'/'-0.d' forms and optionally include explicit zero forms.
     if a < 0 and pre_decs == 0:
         negative_fractional_lower = abs(b)
         negative_fractional_upper = abs(a)
@@ -575,6 +579,8 @@ def _float_range_ast_within_one(a: DecimalLike, b: DecimalLike) -> Node:
             return _one_of(negative_part, zero_part)
         return negative_part
 
+    # Convert [a, b] to fractional bounds relative to the fixed integer prefix.
+    # For negative prefixes, ordering is mirrored by absolute distance.
     if pre_decs < 0:
         fractional_lower = abs(b - pre_decs)
         fractional_upper = abs(a - pre_decs)
@@ -582,22 +588,27 @@ def _float_range_ast_within_one(a: DecimalLike, b: DecimalLike) -> Node:
         fractional_lower = a - pre_decs
         fractional_upper = b - pre_decs
 
+    # Build fractional digit matcher for this fixed integer bucket.
+    # upper_open_one=True when right endpoint is exactly the next integer boundary.
     decimal_ast = _fractional_interval_ast(
         fractional_lower,
         fractional_upper,
         upper_open_one=(pre_decs >= 0 and b == pre_decs + 1),
     )
+    # When integer prefix is zero and lower bound is exactly 0, avoid matching bare ".".
     if a - pre_decs == 0 and pre_decs == 0:
-        # handle the special case that just "." is not allowed
         return _one_of(
             _seq(optional(pre_decs_node), Literal("."), decimal_ast),
             _seq(pre_decs_node, Literal("."), optional(decimal_ast)),
         )
-    # in the other cases we can optionally allow the missing part (e.g. ".2" can be written as "0.2", and "1." can be written as "1")
+    # Otherwise allow syntactic short forms where valid:
+    # - omit leading 0 for fractional values (".2")
+    # - omit fractional digits at exact-integer boundary ("1.")
     elif pre_decs == 0:
         pre_decs_node = optional(pre_decs_node)
     elif (a - pre_decs == 0 and a >= 0) or (b - pre_decs == 0 and a < 0):
         decimal_ast = optional(decimal_ast)
+    # Re-attach sign for negative integer prefixes and emit full number pattern.
     sign = [Literal("-")] if pre_decs < 0 else []
     return _seq(*sign, pre_decs_node, Literal("."), decimal_ast)
 
