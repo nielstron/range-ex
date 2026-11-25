@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "range_ex"
-version = "0.0.5"
+version = "0.0.6"
 authors = [
     { name = "Niels Mündler", email = "n.muendler@posteo.de" },
     { name = "Raj Kiran P", email = "rajkiranjp@gmail.com" }

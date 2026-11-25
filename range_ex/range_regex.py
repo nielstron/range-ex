@@ -28,7 +28,7 @@ def _to_decimal(value: DecimalLike | None) -> Decimal | None:
 
 class Node(ABC):
     @abstractmethod
-    def render(self, capturing: bool = False) -> str:
+    def render(self, capturing: bool = False, ascii_digits: bool = True) -> str:
         raise NotImplementedError
 
     def normalize(self) -> "Node":
@@ -54,8 +54,8 @@ class Node(ABC):
 
 @dataclass(frozen=True)
 class Empty(Node):
-    def render(self, capturing: bool = False) -> str:
-        _ = capturing
+    def render(self, capturing: bool = False, ascii_digits: bool = True) -> str:
+        _ = capturing, ascii_digits
         return r"(?!)"
 
 
@@ -63,8 +63,8 @@ class Empty(Node):
 class Literal(Node):
     text: str
 
-    def render(self, capturing: bool = False) -> str:
-        _ = capturing
+    def render(self, capturing: bool = False, ascii_digits: bool = True) -> str:
+        _ = capturing, ascii_digits
         return re.escape(self.text)
 
 
@@ -73,11 +73,13 @@ class DigitRange(Node):
     start: int
     end: int
 
-    def render(self, capturing: bool = False) -> str:
+    def render(self, capturing: bool = False, ascii_digits: bool = True) -> str:
         _ = capturing
         if self.start == self.end:
             return str(self.start)
-        if self.start == 0 and self.end == 9:
+        # In Python's re, \d on str patterns matches any Unicode decimal digit, while
+        # all other digit ranges are ASCII. Only use \d if the caller opted out of ASCII.
+        if self.start == 0 and self.end == 9 and not ascii_digits:
             return r"\d"
         return f"[{self.start}-{self.end}]"
 
@@ -111,8 +113,8 @@ class FixedRepetition(Node):
     def as_repeated(self) -> Node:
         return self.node
 
-    def render(self, capturing: bool = False) -> str:
-        inner = self.node.render(capturing=capturing)
+    def render(self, capturing: bool = False, ascii_digits: bool = True) -> str:
+        inner = self.node.render(capturing=capturing, ascii_digits=ascii_digits)
         if (
             isinstance(self.node, (Either, Sequence))
             or self.node.as_repeated() is not self.node
@@ -183,8 +185,11 @@ class FixedRepetition(Node):
 class Sequence(Node):
     parts: tuple[Node, ...]
 
-    def render(self, capturing: bool = False) -> str:
-        return "".join(part.render(capturing=capturing) for part in self.parts)
+    def render(self, capturing: bool = False, ascii_digits: bool = True) -> str:
+        return "".join(
+            part.render(capturing=capturing, ascii_digits=ascii_digits)
+            for part in self.parts
+        )
 
     def normalize(self) -> "Node":
         # Normalize each child first so deep rewrites happen bottom-up.
@@ -230,9 +235,12 @@ class Sequence(Node):
 class Either(Node):
     options: tuple[Node, ...]
 
-    def render(self, capturing: bool = False) -> str:
+    def render(self, capturing: bool = False, ascii_digits: bool = True) -> str:
         return _parenthesise(
-            "|".join(option.render(capturing=capturing) for option in self.options),
+            "|".join(
+                option.render(capturing=capturing, ascii_digits=ascii_digits)
+                for option in self.options
+            ),
             capture=capturing,
         )
 
@@ -902,7 +910,8 @@ def range_regex(
     minimum: Optional[int] = None,
     maximum: Optional[int] = None,
     capturing: bool = False,
-):
+    ascii_digits: bool = True,
+) -> str:
     """
     Generate a regex for matching integers in an inclusive range.
 
@@ -913,9 +922,19 @@ def range_regex(
     - If ``maximum`` is omitted, values greater than or equal to ``minimum`` are matched.
 
     For floating-point ranges, use ``float_range_regex``.
+
+    If ``capturing`` is ``True``, grouping uses ``(...)`` instead of ``(?:...)``.
+
+    If ``ascii_digits`` is ``True`` (default), every digit is written as an ASCII
+    character class (``[0-9]``, ``[1-9]``, ...). If ``False``, the full digit range is
+    written as the shorter ``\\d``. In Python's ``re``, ``\\d`` matches any Unicode
+    decimal digit unless the pattern is compiled with ``re.ASCII``, so only use
+    ``ascii_digits=False`` together with ``re.ASCII`` or an engine where ``\\d`` is ASCII.
     """
     return (
-        _range_from_bounds_ast(minimum, maximum).normalize().render(capturing=capturing)
+        _range_from_bounds_ast(minimum, maximum)
+        .normalize()
+        .render(capturing=capturing, ascii_digits=ascii_digits)
     )
 
 
@@ -924,6 +943,7 @@ def float_range_regex(
     maximum: Optional[DecimalLike] = None,
     strict: bool = True,
     capturing: bool = False,
+    ascii_digits: bool = True,
 ) -> str:
     """
     Generate a regex for matching decimal numbers in an inclusive range.
@@ -935,9 +955,11 @@ def float_range_regex(
     - If ``strict`` is ``False``, both integer and decimal representations are
       matched, as long as their numeric value is in range.
     - If ``capturing`` is ``True``, grouping uses ``(...)`` instead of ``(?:...)``.
+    - If ``ascii_digits`` is ``False``, ``[0-9]`` is written as ``\\d``. See
+      ``range_regex`` for why this is only safe with ``re.ASCII``.
     """
     return (
         _float_range_from_bounds_ast(minimum, maximum, strict)
         .normalize()
-        .render(capturing=capturing)
+        .render(capturing=capturing, ascii_digits=ascii_digits)
     )

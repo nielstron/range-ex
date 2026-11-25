@@ -29,23 +29,23 @@ Use `range_regex` for integer ranges and `float_range_regex` for decimal ranges.
 from range_ex import range_regex
 
 regex1 = range_regex(5, 89)
-# (?:[5-9]|[2-7]\d|1\d|8\d)
+# (?:[5-9]|[2-7][0-9]|1[0-9]|8[0-9])
 
 regex2 = range_regex(-65, 12)
-# (?:\-[1-9]|\-[2-5]\d|\-1\d|\-6[0-5]|\d|1[0-2])
+# (?:\-[1-9]|\-[2-5][0-9]|\-1[0-9]|\-6[0-5]|[0-9]|1[0-2])
 ```
 
 If you pass only one bound, the other is unbounded:
 
 ```python
 regex3 = range_regex(minimum=5)
-# (?:[5-9]|[1-9]\d+)
+# (?:[5-9]|[1-9][0-9]+)
 
 regex4 = range_regex(maximum=89)
-# (?:\-[1-9]\d*|\d|[2-7]\d|1\d|8\d)
+# (?:\-[1-9][0-9]*|[0-9]|[2-7][0-9]|1[0-9]|8[0-9])
 
 regex5 = range_regex()
-# (?:\-[1-9]\d*|[1-9]\d*|0)
+# (?:\-[1-9][0-9]*|[1-9][0-9]*|0)
 ```
 
 ### Decimal ranges (`float_range_regex`)
@@ -56,16 +56,16 @@ regex5 = range_regex()
 from range_ex import float_range_regex
 
 regex6 = float_range_regex(0.5, 1.5, strict=True)
-# (?:0?\.(?:[5-9]|[5-9]\d*)|1\.(?:(?:[0-5]|[0-4]\d*|50+))?|1\.)
+# (?:0?\.(?:[5-9]|[5-9][0-9]*)|1\.(?:(?:[0-5]|[0-4][0-9]*|50+))?|1\.)
 
 regex7 = float_range_regex(0.5, 1.5, strict=False)
-# (?:0?\.(?:[5-9]|[5-9]\d*)|1\.(?:(?:[0-5]|[0-4]\d*|50+))?|1\.?)
+# (?:0?\.(?:[5-9]|[5-9][0-9]*)|1\.(?:(?:[0-5]|[0-4][0-9]*|50+))?|1\.?)
 
 regex8 = float_range_regex(maximum="1.5", strict=True)
-# (?:\-(?:(?:0|[1-9]\d*)\.\d+|(?:0|[1-9]\d*)\.|\.\d+)|0?\.\d+|0\.\d*|1\.(?:(?:[0-5]|[0-4]\d*|50+))?|(?:\-[1-9]\d*|[0-1])\.|\-0\.|\-0\.0+|\-\.0+)
+# (?:\-(?:(?:0|[1-9][0-9]*)\.[0-9]+|(?:0|[1-9][0-9]*)\.|\.[0-9]+)|0?\.[0-9]+|0\.[0-9]*|1\.(?:(?:[0-5]|[0-4][0-9]*|50+))?|(?:\-[1-9][0-9]*|[0-1])\.|\-0\.|\-0\.0+|\-\.0+)
 
 regex9 = float_range_regex(strict=True)
-# (?:\-?(?:0|[1-9]\d*)\.\d+|\-?(?:0|[1-9]\d*)\.|\-?\.\d+|(?:\-[1-9]\d*|[1-9]\d*|0)\.|\-0\.|\-0\.0+|\-\.0+)
+# (?:\-?(?:0|[1-9][0-9]*)\.[0-9]+|\-?(?:0|[1-9][0-9]*)\.|\-?\.[0-9]+|(?:\-[1-9][0-9]*|[1-9][0-9]*|0)\.|\-0\.|\-0\.0+|\-\.0+)
 ```
 
 ### Rendering options
@@ -74,8 +74,18 @@ Both APIs support `capturing=True` to emit capturing groups (`(...)`) instead of
 
 ```python
 range_regex(-65, 12, capturing=True)
-# (\-[1-9]|\-[2-5]\d|\-1\d|\-6[0-5]|\d|1[0-2])
+# (\-[1-9]|\-[2-5][0-9]|\-1[0-9]|\-6[0-5]|[0-9]|1[0-2])
 ```
+
+By default, digits are written as ASCII character classes (`[0-9]`, `[1-9]`, ...).
+Both APIs support `ascii_digits=False` to write `[0-9]` as the shorter `\d`:
+
+```python
+range_regex(-65, 12, ascii_digits=False)
+# (?:\-[1-9]|\-[2-5]\d|\-1\d|\-6[0-5]|\d|1[0-2])
+```
+
+> Warning: In Python's `re`, `\d` matches any Unicode decimal digit (e.g. `٣`), while `[1-9]` only matches ASCII digits. Only use `ascii_digits=False` when the regex is compiled with `re.ASCII` or used with an engine where `\d` is ASCII-only.
 
 > Note: Generated regexes can still match inside larger strings (for example, inside `abc25def`). Use anchors like `^...$` if you need whole-string matches.
 

@@ -120,8 +120,62 @@ def test_range_no_bound(value):
     assert re.compile(generated_regex).fullmatch(str(value)) is not None
 
 
-def test_single_digit_class_uses_shorthand():
-    assert range_regex(0, 9) == r"\d"
+def test_single_digit_class_is_ascii_by_default():
+    assert range_regex(0, 9) == "[0-9]"
+
+
+def test_single_digit_class_uses_shorthand_if_not_ascii():
+    assert range_regex(0, 9, ascii_digits=False) == r"\d"
+
+
+optional_ints = st.one_of(st.none(), st.integers(-1000, 1000))
+optional_decimals = st.one_of(
+    st.none(),
+    st.decimals(min_value=-1000, max_value=1000, places=3, allow_nan=False),
+)
+# Strings over all Unicode decimal digits (\d in Python's re), signs and dots
+unicode_number_strings = st.text(
+    alphabet=st.one_of(st.characters(categories=("Nd",)), st.sampled_from("-.")),
+    min_size=1,
+    max_size=6,
+)
+ascii_number_strings = st.text(alphabet="0123456789-.", min_size=1, max_size=6)
+
+
+@given(optional_ints, optional_ints, unicode_number_strings)
+@settings(max_examples=NUM_EXAMPLES, deadline=None)
+def test_range_rejects_non_ascii_digits(minimum, maximum, value):
+    if re.fullmatch(range_regex(minimum, maximum), value) is not None:
+        assert value.isascii()
+
+
+@given(optional_decimals, optional_decimals, st.booleans(), unicode_number_strings)
+@settings(max_examples=NUM_EXAMPLES, deadline=None)
+def test_float_range_rejects_non_ascii_digits(minimum, maximum, strict, value):
+    if re.fullmatch(float_range_regex(minimum, maximum, strict), value) is not None:
+        assert value.isascii()
+
+
+@given(optional_ints, optional_ints, ascii_number_strings)
+@settings(max_examples=NUM_EXAMPLES, deadline=None)
+def test_range_shorthand_equivalent_under_re_ascii(minimum, maximum, value):
+    ascii_regex = range_regex(minimum, maximum)
+    shorthand_regex = range_regex(minimum, maximum, ascii_digits=False)
+    assert (re.fullmatch(ascii_regex, value) is None) == (
+        re.fullmatch(shorthand_regex, value, flags=re.ASCII) is None
+    )
+
+
+@given(optional_decimals, optional_decimals, st.booleans(), ascii_number_strings)
+@settings(max_examples=NUM_EXAMPLES, deadline=None)
+def test_float_range_shorthand_equivalent_under_re_ascii(
+    minimum, maximum, strict, value
+):
+    ascii_regex = float_range_regex(minimum, maximum, strict)
+    shorthand_regex = float_range_regex(minimum, maximum, strict, ascii_digits=False)
+    assert (re.fullmatch(ascii_regex, value) is None) == (
+        re.fullmatch(shorthand_regex, value, flags=re.ASCII) is None
+    )
 
 
 def test_redundant_single_value_ranges_are_collapsed():
